@@ -15,48 +15,78 @@ const apiKeyInput = document.getElementById('api-key-input');
 let isPaused = false;
 let GEMINI_API_KEY = "";
 
+// --- IMAGE LOADING ---
+const images = {};
+const spriteFiles = {
+    tree: 'tree_placeholder.png',
+    hut: 'hut_placeholder.png',
+    villager: 'villager_placeholder.png',
+    crop: 'crop_placeholder.png',
+    fireball: 'fireball_placeholder.png',
+    creature: 'creature_placeholder.png'
+};
+
+let imagesLoaded = 0;
+const totalImages = Object.keys(spriteFiles).length;
+
+// Loop through and load every sprite
+Object.entries(spriteFiles).forEach(([key, filename]) => {
+    images[key] = new Image();
+    images[key] = new Image();
+    images[key].src = filename;
+    images[key].onload = () => {
+        imagesLoaded++;
+        if (imagesLoaded === totalImages) {
+            console.log("All assets loaded. Starting game loop.");
+            draw(); // Start game loop only after images are ready
+        }
+    };
+    images[key].onerror = () => {
+        console.error(`Failed to load image: ${filename}. Make sure it is named correctly in your root folder.`);
+    };
+});
+
+// --- WORLD STATE ---
 let world = {
     villagers: [{x: 100, y: 150}, {x: 400, y: 450}],
     huts: [{x: 120, y: 120}],
-    shrines: [{x: 300, y: 300, spell: 'fireball'}],
+    shrines: [{x: 300, y: 300, spell: 'fireball'}], // Kept as a golden square for mechanics
     trees: [{x: 50, y: 50}, {x: 500, y: 100}],
     crops: [],
-    resourcePiles: []
+    fireballs: [] // Tracks active fireball animations
 };
 
 let creature = {
     x: 300, y: 300,
-    state: "idle",
+    state: "idle", // idle, casting
     spellsUnlocked: ['fireball', 'grow', 'spread_huts']
 };
 
 // --- PAUSE & MENU LOGIC ---
 function openSettings() {
     isPaused = true;
-    apiKeyInput.value = GEMINI_API_KEY; // Populate input with current key
+    apiKeyInput.value = GEMINI_API_KEY; 
     settingsModal.style.display = 'flex';
 }
 
 function closeSettings() {
     GEMINI_API_KEY = apiKeyInput.value.trim();
-    localStorage.setItem('gemini_api_key', GEMINI_API_KEY); // Save key securely to browser
+    localStorage.setItem('gemini_api_key', GEMINI_API_KEY); 
     
     settingsModal.style.display = 'none';
     isPaused = false;
     
     updateLog("Game resumed.");
-    draw(); // Restart the rendering loop
+    draw(); 
 }
 
-// --- LOCAL STORAGE (WORLD STATE) ---
+// --- LOCAL STORAGE ---
 function saveGame() {
-    if (isPaused) return; // Don't auto-save while paused
+    if (isPaused) return; 
     localStorage.setItem('creatureGameState', JSON.stringify({ world, creature }));
-    console.log("Game saved.");
 }
 
 function loadGame() {
-    // Load Game State
     const savedState = localStorage.getItem('creatureGameState');
     if (savedState) {
         const data = JSON.parse(savedState);
@@ -65,7 +95,6 @@ function loadGame() {
         updateLog("World state loaded.");
     }
     
-    // Load API Key
     const savedKey = localStorage.getItem('gemini_api_key');
     if (savedKey) {
         GEMINI_API_KEY = savedKey;
@@ -74,11 +103,131 @@ function loadGame() {
     }
 }
 
-// --- EVENT LISTENERS ---
 settingsBtn.addEventListener('click', openSettings);
 saveSettingsBtn.addEventListener('click', closeSettings);
 
-// --- ACTUAL GEMINI API INTEGRATION ---
+// --- UPDATE LOOPS ---
+function updateVillagers() {
+    world.villagers.forEach(v => {
+        v.x += (Math.random() - 0.5) * 1.5;
+        v.y += (Math.random() - 0.5) * 1.5;
+        
+        // Prevent walking off-canvas
+        v.x = Math.max(10, Math.min(canvas.width - 10, v.x));
+        v.y = Math.max(10, Math.min(canvas.height - 10, v.y));
+
+        if (Math.random() < 0.001) {
+            if (Math.random() < 0.5) world.crops.push({x: v.x + 10, y: v.y + 10});
+            else world.huts.push({x: v.x + 20, y: v.y + 20});
+        }
+    });
+}
+
+function updateCreature() {
+    if (creature.state === "idle") {
+        creature.x += (Math.random() - 0.5) * 0.8;
+        creature.y += (Math.random() - 0.5) * 0.8;
+        
+        creature.x = Math.max(0, Math.min(canvas.width - 50, creature.x));
+        creature.y = Math.max(0, Math.min(canvas.height - 50, creature.y));
+
+        if (Math.random() < 0.005) {
+            const behaviors = ["Wandering aimlessly.", "Sniffing a tree.", "Watching a villager.", "Daydreaming."];
+            statusBox.innerText = behaviors[Math.floor(Math.random() * behaviors.length)];
+        }
+    }
+}
+
+function updateProjectiles() {
+    // Process active fireballs moving toward targets
+    for (let i = world.fireballs.length - 1; i >= 0; i--) {
+        let f = world.fireballs[i];
+        let dx = f.targetX - f.x;
+        let dy = f.targetY - f.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist < 5) {
+            // Impact! Remove the fireball projectile
+            world.fireballs.splice(i, 1);
+        } else {
+            // Move toward target location
+            f.x += (dx / dist) * 5;
+            f.y += (dy / dist) * 5;
+        }
+    }
+}
+
+// --- SPELLS ---
+function castSpell(spellName) {
+    creature.state = "casting";
+    
+    if (spellName === 'fireball') {
+        let target = world.trees[0] || world.villagers[0] || world.crops[0];
+        if (target) {
+            statusBox.innerText = "Casting Fireball!";
+            // Spawn a fireball projectile traveling from tiger to target
+            world.fireballs.push({ x: creature.x + 25, y: creature.y + 25, targetX: target.x, targetY: target.y });
+            
+            // Burn target away after traveling time
+            setTimeout(() => {
+                if (world.trees.includes(target)) world.trees.splice(world.trees.indexOf(target), 1);
+                else if (world.villagers.includes(target)) world.villagers.splice(world.villagers.indexOf(target), 1);
+                else if (world.crops.includes(target)) world.crops.splice(world.crops.indexOf(target), 1);
+            }, 800);
+        }
+    } else if (spellName === 'grow' && (world.trees.length > 0 || world.crops.length > 0)) {
+        statusBox.innerText = "Growing nature!";
+        if (world.trees.length > 0) {
+            world.trees.push({ x: world.trees[0].x + (Math.random() * 40 - 20), y: world.trees[0].y + (Math.random() * 40 - 20) });
+        }
+    } else if (spellName === 'spread_huts' && world.huts.length > 0) {
+        statusBox.innerText = "Spreading huts!";
+        world.huts.push({ x: world.huts[0].x + 50, y: world.huts[0].y + (Math.random() * 20 - 10) });
+    }
+
+    setTimeout(() => { 
+        creature.state = "idle"; 
+        statusBox.innerText = "Wandering aimlessly."; 
+    }, 2000);
+}
+
+// --- MAIN RENDER LOOP ---
+function draw() {
+    if (isPaused) return; 
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw Huts
+    world.huts.forEach(h => ctx.drawImage(images.hut, h.x, h.y, 50, 50));
+
+    // Draw Shrines (Kept as golden square overlay vector)
+    ctx.fillStyle = '#FFD700'; 
+    world.shrines.forEach(s => ctx.fillRect(s.x, s.y, 30, 30));
+
+    // Draw Trees
+    world.trees.forEach(t => ctx.drawImage(images.tree, t.x, t.y, 35, 45));
+
+    // Draw Crops
+    world.crops.forEach(c => ctx.drawImage(images.crop, c.x, c.y, 20, 20));
+
+    // Draw Villagers
+    world.villagers.forEach(v => ctx.drawImage(images.villager, v.x, v.y, 16, 24));
+
+    // Draw Active Fireballs
+    world.fireballs.forEach(f => ctx.drawImage(images.fireball, f.x, f.y, 25, 25));
+
+    // Draw Tiger Creature
+    ctx.drawImage(images.creature, creature.x, creature.y, 55, 65);
+
+    // Engine updates
+    updateVillagers();
+    updateCreature();
+    updateProjectiles();
+
+    requestAnimationFrame(draw);
+}
+
+// --- LIVE GEMINI API CONNECTION ---
 async function sendCommandToGemini(userMessage) {
     if (!GEMINI_API_KEY) {
         updateLog("⚠️ Cannot contact AI: Missing API Key in Settings.");
@@ -88,22 +237,20 @@ async function sendCommandToGemini(userMessage) {
     statusBox.innerText = "Thinking...";
     updateLog(`Sending command to brain: "${userMessage}"`);
 
-    // We use gemini-2.5-flash because it is incredibly fast and cheap/free for hobby projects
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
-    // Construct the context so the AI knows exactly what is happening in the game world
     const promptContext = {
         contents: [{
             parts: [{
-                text: `You are the brain of a giant autonomous 2D creature. 
-                The user has given you a divine command: "${userMessage}".
+                text: `You are the brain of a giant autonomous tiger standing on two legs. 
+                The user has given you a divine voice command: "${userMessage}".
                 
-                Current World State: ${JSON.stringify(world)}
+                Current World State data arrays: ${JSON.stringify(world)}
                 Your Spells Unlocked: ${JSON.stringify(creature.spellsUnlocked)}
                 
-                Choose your next action based on the user's intent. You must pick your own specific target from the objects available in the world state.
+                Choose your next action based on the user's intent. If told to cast something, pick a targeted location element from what is available in the data arrays.
                 
-                Respond ONLY with a raw JSON object matching this schema (do not wrap in markdown blocks):
+                Respond ONLY with a raw JSON object matching this schema (do not wrap in markdown code blocks):
                 {
                     "action": "cast_spell", 
                     "spellName": "fireball" or "grow" or "spread_huts", 
@@ -121,16 +268,11 @@ async function sendCommandToGemini(userMessage) {
         });
 
         const data = await response.json();
-        
-        // Extract text response from Gemini's nested JSON structure
         let aiTextResponse = data.candidates[0].content.parts[0].text.trim();
-        
-        // Clean up markdown block wraps if Gemini accidentally included them
         aiTextResponse = aiTextResponse.replace(/```json|```/g, "");
         
         const aiDecision = JSON.parse(aiTextResponse);
         
-        // Execute the AI's chosen spell
         if (aiDecision.action === "cast_spell") {
             castSpell(aiDecision.spellName);
             if (aiDecision.shortStatusText) {
@@ -146,86 +288,26 @@ async function sendCommandToGemini(userMessage) {
     }
 }
 
-// --- UPDATED INPUT LISTENER ---
+function updateLog(message) {
+    actionLog.innerHTML += `<p>> ${message}</p>`;
+    actionLog.scrollTop = actionLog.scrollHeight;
+}
+
+// --- CHAT INPUT LISTENER ---
 commandInput.addEventListener('keypress', function (e) {
     if (isPaused) return; 
     
     if (e.key === 'Enter' && commandInput.value.trim() !== '') {
         const cmd = commandInput.value;
-        
-        // Display user chat
         chatHistory.innerHTML += `<p style="color: yellow;">User: ${cmd}</p>`;
         chatHistory.scrollTop = chatHistory.scrollHeight;
         
-        // Send to actual AI
         sendCommandToGemini(cmd);
-        
         commandInput.value = '';
     }
 });
 
-// --- ENGINE UPDATE LOOPS ---
-function updateVillagers() {
-    world.villagers.forEach(v => {
-        v.x += (Math.random() - 0.5) * 1.5;
-        v.y += (Math.random() - 0.5) * 1.5;
-        if (Math.random() < 0.001) {
-            if (Math.random() < 0.5) world.crops.push({x: v.x + 10, y: v.y + 10});
-            else world.huts.push({x: v.x + 20, y: v.y + 20});
-        }
-    });
-}
-
-function updateCreature() {
-    if (creature.state === "idle") {
-        creature.x += (Math.random() - 0.5) * 0.5;
-        creature.y += (Math.random() - 0.5) * 0.5;
-
-        if (Math.random() < 0.005) {
-            const behaviors = ["Wandering aimlessly.", "Sniffing a tree.", "Watching a villager."];
-            statusBox.innerText = behaviors[Math.floor(Math.random() * behaviors.length)];
-        }
-    }
-}
-
-function castSpell(spellName) {
-    creature.state = "casting";
-    if (spellName === 'fireball' && world.trees.length > 0) {
-        statusBox.innerText = "Casting Fireball!";
-    } else if (spellName === 'grow' && world.trees.length > 0) {
-        statusBox.innerText = "Growing nature!";
-        world.trees.push({x: world.trees[0].x + 20, y: world.trees[0].y + 20});
-    } else if (spellName === 'spread_huts' && world.huts.length > 0) {
-        statusBox.innerText = "Spreading huts!";
-        world.huts.push({x: world.huts[0].x + 45, y: world.huts[0].y});
-    }
-    setTimeout(() => { creature.state = "idle"; statusBox.innerText = "Wandering aimlessly."; }, 2000);
-}
-
-// --- MAIN RENDER LOOP ---
-function draw() {
-    // CRITICAL: If the game is paused, stop calling requestAnimationFrame. 
-    // This entirely halts the rendering and logic loops.
-    if (isPaused) return; 
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // Draw Game Objects
-    ctx.fillStyle = '#8B4513'; world.huts.forEach(h => ctx.fillRect(h.x, h.y, 40, 40));
-    ctx.fillStyle = '#FFD700'; world.shrines.forEach(s => ctx.fillRect(s.x, s.y, 30, 30));
-    ctx.fillStyle = '#006400'; world.trees.forEach(t => ctx.fillRect(t.x, t.y, 20, 30));
-    ctx.fillStyle = '#9ACD32'; world.crops.forEach(c => ctx.fillRect(c.x, c.y, 15, 15));
-    ctx.fillStyle = '#0000FF'; world.villagers.forEach(v => { ctx.beginPath(); ctx.arc(v.x, v.y, 5, 0, Math.PI*2); ctx.fill(); });
-    ctx.fillStyle = '#FF0000'; creature.fillRect = ctx.fillRect(creature.x, creature.y, 50, 50);
-
-    // Update Logic
-    updateVillagers();
-    updateCreature();
-
-    requestAnimationFrame(draw);
-}
-
 // Initialization
 loadGame();
 setInterval(saveGame, 10000); 
-draw();
+// Note: draw() is triggered internally now once the image loading sequence successfully completely clears.
