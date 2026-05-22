@@ -78,16 +78,87 @@ function loadGame() {
 settingsBtn.addEventListener('click', openSettings);
 saveSettingsBtn.addEventListener('click', closeSettings);
 
+// --- ACTUAL GEMINI API INTEGRATION ---
+async function sendCommandToGemini(userMessage) {
+    if (!GEMINI_API_KEY) {
+        updateLog("⚠️ Cannot contact AI: Missing API Key in Settings.");
+        return;
+    }
+
+    statusBox.innerText = "Thinking...";
+    updateLog(`Sending command to brain: "${userMessage}"`);
+
+    // We use gemini-2.5-flash because it is incredibly fast and cheap/free for hobby projects
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+    // Construct the context so the AI knows exactly what is happening in the game world
+    const promptContext = {
+        contents: [{
+            parts: [{
+                text: `You are the brain of a giant autonomous 2D creature. 
+                The user has given you a divine command: "${userMessage}".
+                
+                Current World State: ${JSON.stringify(world)}
+                Your Spells Unlocked: ${JSON.stringify(creature.spellsUnlocked)}
+                
+                Choose your next action based on the user's intent. You must pick your own specific target from the objects available in the world state.
+                
+                Respond ONLY with a raw JSON object matching this schema (do not wrap in markdown blocks):
+                {
+                    "action": "cast_spell", 
+                    "spellName": "fireball" or "grow" or "spread_huts", 
+                    "shortStatusText": "A 1-to-6 word summary of what you are doing"
+                }`
+            }]
+        }]
+    };
+
+    try {
+        const response = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(promptContext)
+        });
+
+        const data = await response.json();
+        
+        // Extract text response from Gemini's nested JSON structure
+        let aiTextResponse = data.candidates[0].content.parts[0].text.trim();
+        
+        // Clean up markdown block wraps if Gemini accidentally included them
+        aiTextResponse = aiTextResponse.replace(/```json|```/g, "");
+        
+        const aiDecision = JSON.parse(aiTextResponse);
+        
+        // Execute the AI's chosen spell
+        if (aiDecision.action === "cast_spell") {
+            castSpell(aiDecision.spellName);
+            if (aiDecision.shortStatusText) {
+                statusBox.innerText = aiDecision.shortStatusText;
+            }
+        }
+
+    } catch (error) {
+        console.error("API Error:", error);
+        updateLog("❌ Error connecting to Gemini API. Check console/API key.");
+        statusBox.innerText = "Wandering aimlessly.";
+        creature.state = "idle";
+    }
+}
+
+// --- UPDATED INPUT LISTENER ---
 commandInput.addEventListener('keypress', function (e) {
-    if (isPaused) return; // Prevent chatting while paused
+    if (isPaused) return; 
     
     if (e.key === 'Enter' && commandInput.value.trim() !== '') {
         const cmd = commandInput.value;
-        chatHistory.innerHTML += `<p style="color: yellow;">User: ${cmd}</p>`;
         
-        if (cmd.toLowerCase().includes("fire")) castSpell('fireball');
-        else if (cmd.toLowerCase().includes("grow")) castSpell('grow');
-        else if (cmd.toLowerCase().includes("spread")) castSpell('spread_huts');
+        // Display user chat
+        chatHistory.innerHTML += `<p style="color: yellow;">User: ${cmd}</p>`;
+        chatHistory.scrollTop = chatHistory.scrollHeight;
+        
+        // Send to actual AI
+        sendCommandToGemini(cmd);
         
         commandInput.value = '';
     }
