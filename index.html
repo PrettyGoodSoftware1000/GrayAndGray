@@ -20,7 +20,7 @@
             color: #fff;
         }
 
-        /* The play area now fills the whole screen behind everything. */
+        /* The play area fills the whole screen behind everything. */
         #gameCanvas {
             position: fixed;
             top: 0;
@@ -29,10 +29,9 @@
             height: 100vh;
             display: block;
             image-rendering: pixelated;
-            cursor: grab;
         }
 
-        /* Top-left HUD with version + controls hint */
+        /* Top-left HUD: version, (hideable) controls hint, creature status. */
         #hud {
             position: fixed;
             top: 12px;
@@ -42,31 +41,63 @@
             border: 1px solid var(--panel-border);
             padding: 8px 12px;
             font-size: 0.85em;
-            line-height: 1.5;
+            line-height: 1.6;
             pointer-events: none;
+            max-width: 280px;
         }
         #hud b { color: var(--accent); font-size: 1.1em; }
-        #hud span { color: #aaa; }
+        #controls-hint { color: #aaa; }
+        #creature-status { color: var(--accent); font-weight: bold; }
 
-        /* Side bars: 1/3 of their old (full-height) size, resting on the bottom. */
-        .panel {
+        /* --- Speak to Creature panel: bottom-right, 1/3 height --- */
+        #right-panel {
             position: fixed;
             bottom: 0;
+            right: 0;
+            width: 340px;
             height: 33vh;
             box-sizing: border-box;
             padding: 12px 14px;
             background: var(--panel-bg);
             border-top: 3px solid var(--panel-border);
+            border-left: 3px solid var(--panel-border);
             display: flex;
             flex-direction: column;
             gap: 8px;
             z-index: 40;
             backdrop-filter: blur(2px);
         }
-        #left-panel { left: 0; width: 300px; border-right: 3px solid var(--panel-border); }
-        #right-panel { right: 0; width: 340px; border-left: 3px solid var(--panel-border); }
 
-        .panel h3 { margin: 2px 0; font-size: 0.95em; color: #ccc; }
+        /* --- Pause panel: full-height on the left, hidden until ESC --- */
+        #pause-panel {
+            position: fixed;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            width: 360px;
+            box-sizing: border-box;
+            padding: 18px 16px;
+            background: var(--panel-bg);
+            border-right: 3px solid var(--panel-border);
+            display: none;            /* hidden by default */
+            flex-direction: column;
+            gap: 12px;
+            z-index: 60;
+            backdrop-filter: blur(3px);
+        }
+        #pause-panel.open { display: flex; }
+        #pause-panel h2 { margin: 0; color: #fff; }
+        #pause-panel .resume-hint { color: #888; font-size: 0.8em; margin: 0; }
+        .settings-section {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #444;
+        }
+        .settings-section label { color: #ccc; font-size: 0.9em; }
+
+        h3 { margin: 2px 0; font-size: 0.95em; color: #ccc; }
 
         .log {
             flex: 1 1 auto;
@@ -78,17 +109,6 @@
             font-size: 0.85em;
         }
         .log p { margin: 0 0 4px 0; word-wrap: break-word; }
-
-        #creature-status {
-            font-size: 1.05em;
-            font-weight: bold;
-            color: var(--accent);
-            padding: 8px;
-            background: #000;
-            border: 1px solid var(--panel-border);
-            text-align: center;
-            flex: 0 0 auto;
-        }
 
         input[type="text"], input[type="password"] {
             width: 100%;
@@ -102,7 +122,7 @@
         }
 
         button {
-            background: #555;
+            background: #2e7d32;
             color: white;
             border: 1px solid #777;
             padding: 9px;
@@ -110,28 +130,7 @@
             font-family: monospace;
             flex: 0 0 auto;
         }
-        button:hover { background: #666; }
-
-        /* --- Settings Menu Modal --- */
-        #settings-modal {
-            display: none;
-            position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0, 0, 0, 0.85);
-            justify-content: center;
-            align-items: center;
-            z-index: 100;
-        }
-        .modal-content {
-            background: #222;
-            padding: 30px;
-            border: 3px solid var(--panel-border);
-            width: 350px;
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-            box-shadow: 0 0 20px rgba(0,0,0,0.7);
-        }
+        button:hover { filter: brightness(1.15); }
     </style>
 </head>
 <body>
@@ -140,30 +139,27 @@
 
     <div id="hud">
         <b>🥚 Egg v1</b><br>
-        <span>WASD / Arrows to scroll the world</span>
-    </div>
-
-    <div id="left-panel" class="panel">
-        <button id="settings-btn">⚙️ Settings (Pause)</button>
+        <span id="controls-hint">WASD / Arrows to scroll the world &middot; ESC to pause</span>
         <div id="creature-status">Wandering aimlessly.</div>
-        <h3>Action Log</h3>
-        <div id="action-log" class="log"></div>
     </div>
 
-    <div id="right-panel" class="panel">
-        <h3>Command Creature</h3>
-        <div id="chat-history" class="log"></div>
-        <input type="text" id="command-input" placeholder="Tell creature what to do...">
-    </div>
-
-    <div id="settings-modal">
-        <div class="modal-content">
-            <h2>Egg v1 — Settings</h2>
-            <p style="color: #aaa; font-size: 0.9em;">Game is currently PAUSED.</p>
+    <!-- Hidden until ESC. When paused it fills the left edge top-to-bottom. -->
+    <div id="pause-panel">
+        <h2>&#9208; Paused</h2>
+        <div class="settings-section">
             <label for="api-key-input">Gemini API Key:</label>
             <input type="password" id="api-key-input" placeholder="AIzaSy...">
-            <button id="save-settings-btn" style="background: #2e7d32;">Save &amp; Resume</button>
+            <button id="save-settings-btn">Save &amp; Resume</button>
         </div>
+        <h3>Action Log</h3>
+        <div id="action-log" class="log"></div>
+        <p class="resume-hint">Press ESC again to resume.</p>
+    </div>
+
+    <div id="right-panel">
+        <h3>Speak to Creature</h3>
+        <div id="chat-history" class="log"></div>
+        <input type="text" id="command-input" placeholder="Speak to the creature...">
     </div>
 
     <script src="game.js"></script>

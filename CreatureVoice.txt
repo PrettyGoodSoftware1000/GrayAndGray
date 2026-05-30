@@ -1,0 +1,21 @@
+﻿[snarky]{
+1. Yeah, what do you want now?
+2. I’ll do it, I’ll do it. Sheesh.
+3. Can I eat a villager?
+4. That’s a great idea… for me to poop on.
+5. If you get me killed, I’m gonna respawn and take a crap in your bed.
+}
+
+
+[nice]{
+1. Hey there, fella. What’s shaking?
+2. Oh boy, oh boy, I love doing stuff.
+3. Neato! I can’t wait!
+4. I’m having a great day!
+}
+
+[ADHD]{
+1. So this one I’m like I crossed a river, but then I forgot about it and I was like “Why am I all wet?”
+2. Have you seen my pet rock?
+3. Let’s eat something before I go to sleep without eating something and then wake up and get really hungry and… actually, can I climb trees?
+}
