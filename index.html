@@ -69,9 +69,20 @@
         }
 
         /* --- Pause panel: full-height on the left, hidden until ESC --- */
-        #pause-panel {
+        /* Ruler strip across the top, shown only while paused. */
+        #ruler {
             position: fixed;
             top: 0;
+            left: 0;
+            width: 100vw;
+            height: 30px;
+            display: none;
+            z-index: 70;
+        }
+
+        #pause-panel {
+            position: fixed;
+            top: 30px;            /* sits just below the ruler */
             left: 0;
             bottom: 0;
             width: 360px;
@@ -136,6 +147,7 @@
 <body>
 
     <canvas id="gameCanvas"></canvas>
+    <canvas id="ruler"></canvas>
 
     <div id="hud">
         <b>🥚 Egg v1</b><br>
