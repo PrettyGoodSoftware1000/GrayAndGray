@@ -1,37 +1,43 @@
 /* ===========================================================
    EGG V2
-   - Scrollable world (WASD/arrows) + zoom (-/=)
+   - Scrollable world: WASD/arrows, hold LEFT-CLICK to drag-pan,
+     mouse wheel (or -/=) to zoom
    - Procedural rivers, lakes, huts, villagers, goblins, shrines
    - Sprites from /images (backgrounds keyed out)
    - ESC = pause: top ruler (meters) + settings + Action Log
    - HUD vitals: 3 Zelda-style hearts + 5 stamina dots (2 each)
-   - Creature walks/stops/turns; greets/eats nearby villagers;
-     speaks in a personality from CreatureVoice.txt ("be <style>")
-   - Burn / burn goblins (chain) / run / guard the village / stop
+   - Creature wanders (2 m/s) / runs (8 m/s); greets/eats villagers;
+     burns by walking up close first; speaks from CreatureVoice.txt
+   - Villagers stroll near their hut; goblins march & charge
    =========================================================== */
 
-const VERSION = "egg-v2";
+const VERSION = "egg-v2.1";
 
 const PIXELS_PER_METER = 10;
 const m2px = (m) => m * PIXELS_PER_METER;
 
 // Speeds & ranges
-const WALK_SPEED_MPS = 1.98;            // 33% of the old wander speed
-const SEEK_SPEED_MPS = 3.2;
+const WANDER_SPEED_MPS = 2.0;            // creature stroll
+const RUN_SPEED_MPS = 8.0;               // running
+const SEEK_SPEED_MPS = 3.2;              // base approach (scaled by run)
+const VILLAGER_SPEED_MPS = 1.0;
+const VILLAGER_LEASH_PX = m2px(20);      // villagers stay within 20 m of home
 const INTERACT_RANGE_PX = m2px(10);
 const INTERACT_COOLDOWN_MS = 10000;
-const FIREBALL_RANGE_PX = m2px(15);
+const FIREBALL_RANGE_M = 15;             // max allowed throw range
+const FIREBALL_RANGE_PX = m2px(FIREBALL_RANGE_M);
+const BURN_APPROACH_PX = m2px(11);       // creature walks up to ~11 m, then throws (within range)
 const GOBLIN_DETECT_PX = m2px(40);
 const GOBLIN_SPEED_MPS = 2.4;
 const GOBLIN_CONTACT_PX = 18;
-const GOBLIN_CHAIN_RANGE_PX = m2px(50);  // chain to a goblin within 50 m of the last target
+const GOBLIN_CHAIN_RANGE_PX = m2px(50);
 const GUARD_ENEMY_RANGE_PX = m2px(40);
 const FIREBALL_COOLDOWN_MS = 2000;
+const MIN_HUT_DIST_PX = 50;              // don't build huts on top of huts
 
 // Stamina
 const STAMINA_MAX = 10;
-const RUN_DRAIN_S = 1;                    // -1 stamina / second running
-const STAMINA_REGEN_S = 3;                // +1 stamina / 3 seconds
+const RUN_DRAIN_S = 1, STAMINA_REGEN_S = 3;
 
 const ASH_LIFETIME_MS = 120000, ASH_FADE_MS = 20000;
 
@@ -61,19 +67,45 @@ const MIN_ZOOM = 0.5, MAX_ZOOM = 3, CAMERA_SPEED = 7;
 const keys = {};
 let controlsHintHidden = false;
 
+// drag-to-pan
+let dragging = false, dragLastX = 0, dragLastY = 0;
+
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 // ===========================================================
-//  CANVAS / ZOOM
+//  CANVAS / ZOOM / PAN
 // ===========================================================
 function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; clampCamera(); if (isPaused) drawRuler(); }
 window.addEventListener('resize', resizeCanvas);
-function setZoom(nz) {
+
+// Zoom, keeping the world point under (ax,ay) fixed. Defaults to screen center.
+function setZoom(nz, ax, ay) {
     nz = clamp(nz, MIN_ZOOM, MAX_ZOOM);
-    const cxw = camera.x + (canvas.width / 2) / zoom, cyw = camera.y + (canvas.height / 2) / zoom;
-    zoom = nz; camera.x = cxw - (canvas.width / 2) / zoom; camera.y = cyw - (canvas.height / 2) / zoom;
+    if (ax === undefined) { ax = canvas.width / 2; ay = canvas.height / 2; }
+    const wx = camera.x + ax / zoom, wy = camera.y + ay / zoom;
+    zoom = nz;
+    camera.x = wx - ax / zoom; camera.y = wy - ay / zoom;
     clampCamera(); if (isPaused) drawRuler();
 }
+canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const f = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    setZoom(zoom * f, e.clientX, e.clientY);
+}, { passive: false });
+
+canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    dragging = true; dragLastX = e.clientX; dragLastY = e.clientY;
+    canvas.style.cursor = 'grabbing'; e.preventDefault();
+});
+window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    camera.x -= (e.clientX - dragLastX) / zoom;
+    camera.y -= (e.clientY - dragLastY) / zoom;
+    dragLastX = e.clientX; dragLastY = e.clientY;
+    clampCamera(); if (isPaused) drawRuler();
+});
+window.addEventListener('mouseup', () => { if (dragging) { dragging = false; canvas.style.cursor = 'grab'; } });
 
 // ===========================================================
 //  SPRITES
@@ -106,37 +138,21 @@ function imgReady(key) { const i = images[key]; return !!i && ((i.width || i.nat
 SPRITE_KEYS.forEach(loadSprite);
 
 // ===========================================================
-//  HUD VITALS  (Zelda-style hearts + stamina dots)
+//  HUD VITALS
 // ===========================================================
-const HEART = [
-    [0, 1, 1, 0, 0, 1, 1, 0],
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    [0, 1, 1, 1, 1, 1, 1, 0],
-    [0, 0, 1, 1, 1, 1, 0, 0],
-    [0, 0, 0, 1, 1, 0, 0, 0]
-];
-function heartSVG(state) { // 'full' | 'half' | 'empty'
+const HEART = [[0, 1, 1, 0, 0, 1, 1, 0], [1, 1, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 1], [0, 1, 1, 1, 1, 1, 1, 0], [0, 0, 1, 1, 1, 1, 0, 0], [0, 0, 0, 1, 1, 0, 0, 0]];
+function heartSVG(state) {
     let cells = '';
     for (let y = 0; y < HEART.length; y++) for (let x = 0; x < 8; x++) {
         if (!HEART[y][x]) continue;
-        let fill = '#f22e2e';
-        if (state === 'empty') fill = '#3a1414';
-        else if (state === 'half' && x >= 4) fill = '#3a1414';
+        let fill = '#f22e2e'; if (state === 'empty') fill = '#3a1414'; else if (state === 'half' && x >= 4) fill = '#3a1414';
         cells += `<rect x="${x}" y="${y}" width="1" height="1" fill="${fill}"/>`;
     }
-    if (state !== 'empty') cells += '<rect x="1" y="1" width="1" height="1" fill="#ffd0d0"/>'; // glint
+    if (state !== 'empty') cells += '<rect x="1" y="1" width="1" height="1" fill="#ffd0d0"/>';
     return `<svg width="26" height="23" viewBox="0 0 8 7">${cells}</svg>`;
 }
-function renderHearts(full, total = 3) {
-    let html = ''; for (let i = 0; i < total; i++) html += heartSVG(i < full ? 'full' : 'empty'); heartsEl.innerHTML = html;
-}
-function renderStamina(s) {
-    let html = '';
-    for (let i = 0; i < 5; i++) { const cls = s >= i * 2 + 2 ? 'full' : (s === i * 2 + 1 ? 'half' : ''); html += `<div class="stamina-dot ${cls}"></div>`; }
-    staminaEl.innerHTML = html;
-}
+function renderHearts(full, total = 3) { let html = ''; for (let i = 0; i < total; i++) html += heartSVG(i < full ? 'full' : 'empty'); heartsEl.innerHTML = html; }
+function renderStamina(s) { let html = ''; for (let i = 0; i < 5; i++) { const cls = s >= i * 2 + 2 ? 'full' : (s === i * 2 + 1 ? 'half' : ''); html += `<div class="stamina-dot ${cls}"></div>`; } staminaEl.innerHTML = html; }
 
 // ===========================================================
 //  GRASS
@@ -167,18 +183,36 @@ function inLake(x, y, pad = 0) { return world.lakes.some(l => { const nx = (x - 
 function nearRiver(x, y, pad = 0) { return world.rivers.some(r => { for (let i = 0; i < r.points.length - 1; i++) { const a = r.points[i], b = r.points[i + 1]; if (distToSegment(x, y, a.x, a.y, b.x, b.y) < r.width / 2 + pad) return true; } return false; }); }
 function isWater(x, y, pad = 0) { return inLake(x, y, pad) || nearRiver(x, y, pad); }
 function findLandSpot(margin = 60, waterPad = 25) { for (let i = 0; i < 80; i++) { const x = margin + Math.random() * (WORLD_W - margin * 2), y = margin + Math.random() * (WORLD_H - margin * 2); if (!isWater(x, y, waterPad)) return { x, y }; } return { x: WORLD_W / 2, y: WORLD_H / 2 }; }
+function canPlaceHut(x, y) { if (isWater(x, y, 15)) return false; const cx = x + 25, cy = y + 25; for (const h of world.huts) if (Math.hypot((h.x + 25) - cx, (h.y + 25) - cy) < MIN_HUT_DIST_PX) return false; return true; }
+function nearestHutCenter(x, y) { let best = null, bd = Infinity; for (const h of world.huts) { const c = { x: h.x + 25, y: h.y + 25 }; const d = Math.hypot(c.x - x, c.y - y); if (d < bd) { bd = d; best = c; } } return best; }
+
 function generateWorld() {
     world = { lakes: [], rivers: [], huts: [], villagers: [], shrines: [], trees: [], crops: [], fireballs: [], goblins: [], goblinGroups: [], ashes: [] };
     for (let i = 0; i < 4; i++) world.lakes.push({ x: 200 + Math.random() * (WORLD_W - 400), y: 200 + Math.random() * (WORLD_H - 400), rx: 70 + Math.random() * 120, ry: 55 + Math.random() * 100 });
     for (let r = 0; r < 2; r++) { const points = []; const horizontal = Math.random() < 0.5; let x = horizontal ? 0 : Math.random() * WORLD_W, y = horizontal ? Math.random() * WORLD_H : 0, angle = horizontal ? 0 : Math.PI / 2; while (x >= -50 && x <= WORLD_W + 50 && y >= -50 && y <= WORLD_H + 50) { points.push({ x, y }); angle += (Math.random() - 0.5) * 0.7; x += Math.cos(angle) * 60; y += Math.sin(angle) * 60; if (points.length > 120) break; } world.rivers.push({ points, width: 22 + Math.random() * 14 }); }
     for (let i = 0; i < 55; i++) world.trees.push(findLandSpot(40, 18));
-    for (let s = 0; s < 3; s++) { const center = findLandSpot(120, 60); const hutsHere = 3 + Math.floor(Math.random() * 4); for (let h = 0; h < hutsHere; h++) { const hx = center.x + (Math.random() * 160 - 80), hy = center.y + (Math.random() * 160 - 80); if (!isWater(hx, hy, 20)) world.huts.push({ x: hx, y: hy }); } for (let c = 0; c < 4; c++) { const cx = center.x + (Math.random() * 200 - 100), cy = center.y + (Math.random() * 200 - 100); if (!isWater(cx, cy, 15)) world.crops.push({ x: cx, y: cy }); } }
-    for (let i = 0; i < 18; i++) world.villagers.push(findLandSpot(60, 20));
+    // hut settlements (no stacking)
+    for (let s = 0; s < 3; s++) {
+        const center = findLandSpot(120, 60); const hutsHere = 3 + Math.floor(Math.random() * 4);
+        for (let h = 0; h < hutsHere; h++) { for (let a = 0; a < 12; a++) { const hx = center.x + (Math.random() * 200 - 100), hy = center.y + (Math.random() * 200 - 100); if (canPlaceHut(hx, hy)) { world.huts.push({ x: hx, y: hy }); break; } } }
+        for (let c = 0; c < 4; c++) { const cx = center.x + (Math.random() * 200 - 100), cy = center.y + (Math.random() * 200 - 100); if (!isWater(cx, cy, 15)) world.crops.push({ x: cx, y: cy }); }
+    }
+    // villagers live near a hut (within ~15 m), leashed to 20 m
+    for (let i = 0; i < 18; i++) {
+        if (world.huts.length) {
+            const home = world.huts[Math.floor(Math.random() * world.huts.length)]; const hc = { x: home.x + 25, y: home.y + 25 };
+            let spot = hc; for (let a = 0; a < 12; a++) { const ang = Math.random() * 6.283, r = Math.random() * 150; const p = { x: hc.x + Math.cos(ang) * r, y: hc.y + Math.sin(ang) * r }; if (!isWater(p.x, p.y, 10)) { spot = p; break; } }
+            world.villagers.push({ x: spot.x, y: spot.y, home: { x: hc.x, y: hc.y }, heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0 });
+        } else { const s = findLandSpot(60, 20); world.villagers.push({ x: s.x, y: s.y, home: { x: s.x, y: s.y }, heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0 }); }
+    }
     world.shrines.push(findLandSpot(150, 60));
     for (let g = 0; g < 3; g++) { const c = findLandSpot(120, 40); world.goblinGroups.push({ x: c.x, y: c.y, heading: Math.random() * Math.PI * 2, turnTimer: 120 + Math.random() * 240 }); const n = 2 + Math.floor(Math.random() * 2); for (let i = 0; i < n; i++) world.goblins.push({ x: c.x + (Math.random() * 40 - 20), y: c.y + (Math.random() * 40 - 20), group: g, ox: Math.random() * 30 - 15, oy: Math.random() * 30 - 15 }); }
     updateLog("Generated a fresh world: rivers, lakes, huts, villagers & goblin packs.");
 }
-function normalizeWorld() { ['lakes', 'rivers', 'huts', 'villagers', 'shrines', 'trees', 'crops', 'fireballs', 'goblins', 'goblinGroups', 'ashes'].forEach(k => { if (!Array.isArray(world[k])) world[k] = []; }); }
+function normalizeWorld() {
+    ['lakes', 'rivers', 'huts', 'villagers', 'shrines', 'trees', 'crops', 'fireballs', 'goblins', 'goblinGroups', 'ashes'].forEach(k => { if (!Array.isArray(world[k])) world[k] = []; });
+    world.villagers.forEach(v => { if (!v.home) { v.home = nearestHutCenter(v.x, v.y) || { x: v.x, y: v.y }; } if (v.vstate === undefined) { v.vstate = 'moving'; v.vUntil = 0; v.heading = Math.random() * 6.283; } });
+}
 
 // ===========================================================
 //  WATER LAYER
@@ -215,7 +249,6 @@ function loadGame() {
     const saved = localStorage.getItem('creatureGameState'); let ok = false;
     if (saved) { try { const data = JSON.parse(saved); if (data.version === VERSION && data.world && data.world.rivers) { world = data.world; creature = data.creature; if (data.camera) camera = data.camera; if (data.zoom) zoom = data.zoom; normalizeWorld(); updateLog("World state loaded."); ok = true; } } catch (e) { console.warn("Bad save, regenerating.", e); } }
     if (!ok) generateWorld();
-    // transient / defaulted creature fields
     creature.act = 'free'; creature.burnGoal = null; creature.goblinCampaign = null; creature.guard = null; creature.resumeGuard = false;
     creature.running = false; creature.regenTimer = 0; creature.drainTimer = 0;
     if (creature.stamina === undefined) creature.stamina = STAMINA_MAX;
@@ -246,22 +279,21 @@ window.addEventListener('keydown', (e) => {
     if (k === 'escape') { e.preventDefault(); togglePause(); return; }
     if (typingInInput()) return;
     if (k === 'enter') { e.preventDefault(); commandInput.focus(); return; }
-    if (k === '=' || k === '+') { e.preventDefault(); setZoom(zoom * 1.1); return; }
-    if (k === '-' || k === '_') { e.preventDefault(); setZoom(zoom / 1.1); return; }
+    if (k === '=' || k === '+') { e.preventDefault(); setZoom(zoom * 1.12); return; }
+    if (k === '-' || k === '_') { e.preventDefault(); setZoom(zoom / 1.12); return; }
     if (MOVE_KEYS.includes(k)) { keys[k] = true; if (k.startsWith('arrow')) e.preventDefault(); if (!controlsHintHidden) { controlsHint.style.display = 'none'; controlsHintHidden = true; } }
 });
 window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
 commandInput.addEventListener('focus', () => { for (const kk in keys) keys[kk] = false; });
 commandInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
-        e.preventDefault();
+        e.preventDefault(); e.stopPropagation();   // stopPropagation: don't let the window handler re-focus us
         const cmd = commandInput.value.trim();
         if (cmd) { playerSays(cmd); commandInput.value = ''; if (!handleControl(cmd)) sendCommandToGemini(cmd); }
-        commandInput.blur();
+        commandInput.blur();                        // hand control back -> arrows/WASD scroll instantly
     }
 });
 
-// Instant, no-API controls (voice switch, stop, slow down)
 function handleControl(cmd) {
     if (trySwitchVoice(cmd)) return true;
     if (/\b(slow down|don'?t rush|stop running|ease up|take it easy|chill out|walk normally|quit running)\b/i.test(cmd)) { stopRunning(); creatureSays('(eases back to a walk.)'); return true; }
@@ -288,20 +320,42 @@ function updateStamina(dt) {
 }
 function startRunning() { if (creature.stamina <= 0) { statusBox.innerText = 'Too tired to run.'; creatureSays('(too winded to run.)'); return; } creature.running = true; statusBox.innerText = 'Running!'; }
 function stopRunning() { creature.running = false; }
-function runMult() { return creature.running ? 2 : 1; }
-
+function runMult() { return creature.running ? (RUN_SPEED_MPS / WANDER_SPEED_MPS) : 1; }   // wander 2 -> run 8
 function cancelAll() { creature.act = 'free'; creature.burnGoal = null; creature.goblinCampaign = null; creature.guard = null; creature.resumeGuard = false; creature.running = false; statusBox.innerText = 'Wandering aimlessly.'; }
 
 // ===========================================================
 //  WORLD UPDATES
 // ===========================================================
-function updateVillagers() {
-    world.villagers.forEach(v => {
-        const nx = v.x + (Math.random() - 0.5) * 1.5, ny = v.y + (Math.random() - 0.5) * 1.5;
-        if (!isWater(nx, ny, 10)) { v.x = clamp(nx, 10, WORLD_W - 10); v.y = clamp(ny, 10, WORLD_H - 10); }
-        if (Math.random() < 0.0008) { if (Math.random() < 0.5 && !isWater(v.x + 10, v.y + 10, 10)) world.crops.push({ x: v.x + 10, y: v.y + 10 }); else if (!isWater(v.x + 20, v.y + 20, 15)) world.huts.push({ x: v.x + 20, y: v.y + 20 }); }
-    });
+function updateVillagers(dt, now) {
+    const sp = VILLAGER_SPEED_MPS * PIXELS_PER_METER * dt;
+    for (const v of world.villagers) {
+        if (!v.home) v.home = { x: v.x, y: v.y };
+        if (v.vstate === undefined) { v.vstate = 'moving'; v.vUntil = now + (1000 + Math.random() * 2000); v.heading = Math.random() * 6.283; }
+        if (v.vstate === 'stopped') {
+            if (now >= v.vUntil) {
+                v.vstate = 'moving'; v.vUntil = now + (1000 + Math.random() * 2000);   // move 1-3 s
+                const dh = Math.hypot(v.x - v.home.x, v.y - v.home.y);
+                v.heading = dh > VILLAGER_LEASH_PX * 0.75
+                    ? Math.atan2(v.home.y - v.y, v.home.x - v.x) + (Math.random() - 0.5)   // steer home when near the leash
+                    : Math.random() * 6.283;
+            }
+        } else { // moving
+            if (now >= v.vUntil) { v.vstate = 'stopped'; v.vUntil = now + (1000 + Math.random() * 2000); }  // stop 1-3 s
+            else {
+                const nx = v.x + Math.cos(v.heading) * sp, ny = v.y + Math.sin(v.heading) * sp;
+                const out = Math.hypot(nx - v.home.x, ny - v.home.y) > VILLAGER_LEASH_PX;
+                if (out || isWater(nx, ny, 8) || nx < 10 || nx > WORLD_W - 10 || ny < 10 || ny > WORLD_H - 10) {
+                    v.vstate = 'stopped'; v.vUntil = now + (800 + Math.random() * 1500); v.heading = Math.atan2(v.home.y - v.y, v.home.x - v.x);
+                } else { v.x = nx; v.y = ny; }
+            }
+        }
+        if (Math.random() < 0.0006) {
+            if (Math.random() < 0.5) { const cx = v.x + 10, cy = v.y + 10; if (!isWater(cx, cy, 10)) world.crops.push({ x: cx, y: cy }); }
+            else { const hx = v.x + 20, hy = v.y + 20; if (canPlaceHut(hx, hy)) world.huts.push({ x: hx, y: hy }); }
+        }
+    }
 }
+
 const WALK_STATUS = ["Wandering aimlessly.", "Exploring the map.", "Off to see what's over there.", "Roaming."];
 function pickWalkStatus() { return WALK_STATUS[Math.floor(Math.random() * WALK_STATUS.length)]; }
 function enterStopped(now) { creature.moveState = 'stopped'; creature.stateUntil = now + (1000 + Math.random() * 2000); creature.heading = Math.random() * Math.PI * 2; statusBox.innerText = "Pausing to look around."; }
@@ -311,11 +365,10 @@ function updateCreature(dt, now) {
     if (creature.act === 'seeking') { seekStep(dt); return; }
     if (creature.act === 'burning_goblins') { updateBurningGoblins(dt, now); return; }
     if (creature.act === 'guarding') { updateGuard(dt, now); return; }
-    // free roam
     if (now > creature.interactCooldown) { const v = nearestIn(world.villagers, creature.x + 30, creature.y + 33, INTERACT_RANGE_PX); if (v) { startVillagerInteraction(v.obj, now); return; } }
     if (creature.moveState === 'stopped') { if (now >= creature.stateUntil) { creature.moveState = 'walking'; creature.stateUntil = now + (3000 + Math.random() * 12000); statusBox.innerText = pickWalkStatus(); } return; }
     if (now >= creature.stateUntil) { enterStopped(now); return; }
-    const sp = WALK_SPEED_MPS * PIXELS_PER_METER * dt * runMult();
+    const sp = WANDER_SPEED_MPS * PIXELS_PER_METER * dt * runMult();
     const nx = creature.x + Math.cos(creature.heading) * sp, ny = creature.y + Math.sin(creature.heading) * sp;
     if (nx < 0 || nx > WORLD_W - 60 || ny < 0 || ny > WORLD_H - 66 || isWater(nx + 30, ny + 60, 12)) { enterStopped(now); return; }
     creature.x = nx; creature.y = ny;
@@ -356,57 +409,43 @@ function makeAshes(x, y) { const specks = []; for (let k = 0; k < 6; k++) specks
 function normalizeTarget(t) { if (!t) return 'any'; t = String(t).toLowerCase(); const map = { trees: 'tree', villagers: 'villager', huts: 'hut', house: 'hut', home: 'hut', crops: 'crop', goblins: 'goblin', something: 'any', anything: 'any', nearest: 'any' }; return map[t] || t; }
 function findNearestBurnable(targetType) { const pools = { tree: world.trees, villager: world.villagers, hut: world.huts, crop: world.crops, goblin: world.goblins }; const entries = pools[targetType] ? [[targetType, pools[targetType]]] : Object.entries(pools); const cx = creature.x + 30, cy = creature.y + 33; let best = null, bd = Infinity; for (const [type, arr] of entries) for (const o of arr) { const d = Math.hypot(o.x - cx, o.y - cy); if (d < bd) { bd = d; best = { type, arr, obj: o }; } } return best; }
 function spawnFireballAt(o, arr) { world.fireballs.push({ x: creature.x + 30, y: creature.y + 33, targetX: o.x, targetY: o.y }); setTimeout(() => { const i = arr.indexOf(o); if (i >= 0) { const rem = arr.splice(i, 1)[0]; world.ashes.push(makeAshes(rem.x, rem.y)); } }, 800); }
-function throwFireballAt(target) { creature.act = 'busy'; statusBox.innerText = "Casting Fireball!"; spawnFireballAt(target.obj, target.arr); setTimeout(() => { creature.act = 'free'; statusBox.innerText = "Wandering aimlessly."; }, FIREBALL_COOLDOWN_MS); }
+
+// Burn: ALWAYS walk up close, then throw from within range.
 function performBurn(targetType) {
     targetType = normalizeTarget(targetType);
     const target = findNearestBurnable(targetType);
     if (!target) { statusBox.innerText = `Nothing to burn.`; return; }
-    const d = Math.hypot(target.obj.x - (creature.x + 30), target.obj.y - (creature.y + 33));
-    if (d <= FIREBALL_RANGE_PX) throwFireballAt(target);
-    else { creature.burnGoal = target; creature.act = 'seeking'; statusBox.innerText = "Closing in to burn..."; }
+    creature.burnGoal = target; creature.act = 'seeking'; statusBox.innerText = "Walking up to burn...";
 }
 function seekStep(dt) {
     const g = creature.burnGoal;
     if (!g || g.arr.indexOf(g.obj) < 0) { creature.burnGoal = null; creature.act = 'free'; statusBox.innerText = "Wandering aimlessly."; return; }
     const d = Math.hypot(g.obj.x - (creature.x + 30), g.obj.y - (creature.y + 33));
-    if (d <= FIREBALL_RANGE_PX) { creature.burnGoal = null; throwFireballAt(g); return; }
+    if (d <= BURN_APPROACH_PX) { creature.burnGoal = null; creature.act = 'busy'; statusBox.innerText = "Casting Fireball!"; spawnFireballAt(g.obj, g.arr); setTimeout(() => { creature.act = 'free'; statusBox.innerText = "Wandering aimlessly."; }, FIREBALL_COOLDOWN_MS); return; }
     stepCreatureToward(g.obj.x, g.obj.y, SEEK_SPEED_MPS * PIXELS_PER_METER * dt * runMult());
 }
 function castGrow() { if (!world.trees.length) return; creature.act = 'busy'; statusBox.innerText = "Growing nature!"; world.trees.push({ x: world.trees[0].x + (Math.random() * 40 - 20), y: world.trees[0].y + (Math.random() * 40 - 20) }); setTimeout(() => { creature.act = 'free'; statusBox.innerText = "Wandering aimlessly."; }, 2000); }
-function castSpreadHuts() { if (!world.huts.length) return; creature.act = 'busy'; statusBox.innerText = "Spreading huts!"; world.huts.push({ x: world.huts[0].x + 50, y: world.huts[0].y + (Math.random() * 20 - 10) }); setTimeout(() => { creature.act = 'free'; statusBox.innerText = "Wandering aimlessly."; }, 2000); }
+function castSpreadHuts() { creature.act = 'busy'; statusBox.innerText = "Spreading huts!"; if (world.huts.length) { for (let a = 0; a < 16; a++) { const base = world.huts[Math.floor(Math.random() * world.huts.length)]; const hx = base.x + (Math.random() * 160 - 80), hy = base.y + (Math.random() * 160 - 80); if (canPlaceHut(hx, hy)) { world.huts.push({ x: hx, y: hy }); break; } } } setTimeout(() => { creature.act = 'free'; statusBox.innerText = "Wandering aimlessly."; }, 2000); }
 
-// ---- Goblin burn chain ("burn some goblins") ----
-function startGoblinCampaign(now, resumeGuard) {
-    if (!world.goblins.length) { statusBox.innerText = 'No goblins to burn.'; if (resumeGuard && creature.guard) creature.act = 'guarding'; else creature.act = 'free'; return; }
-    creature.goblinCampaign = { currentTarget: null, lastTargetPos: null, nextThrowReady: 0 };
-    creature.resumeGuard = !!resumeGuard; creature.act = 'burning_goblins'; statusBox.innerText = 'Hunting goblins...';
-}
-function endGoblinCampaign() {
-    creature.goblinCampaign = null;
-    if (creature.resumeGuard && creature.guard) { creature.act = 'guarding'; statusBox.innerText = 'Guarding the village.'; }
-    else { creature.act = 'free'; creature.resumeGuard = false; statusBox.innerText = 'Wandering aimlessly.'; }
-}
+// Goblin burn chain
+function startGoblinCampaign(now, resumeGuard) { if (!world.goblins.length) { statusBox.innerText = 'No goblins to burn.'; if (resumeGuard && creature.guard) creature.act = 'guarding'; else creature.act = 'free'; return; } creature.goblinCampaign = { currentTarget: null, lastTargetPos: null, nextThrowReady: 0 }; creature.resumeGuard = !!resumeGuard; creature.act = 'burning_goblins'; statusBox.innerText = 'Hunting goblins...'; }
+function endGoblinCampaign() { creature.goblinCampaign = null; if (creature.resumeGuard && creature.guard) { creature.act = 'guarding'; statusBox.innerText = 'Guarding the village.'; } else { creature.act = 'free'; creature.resumeGuard = false; statusBox.innerText = 'Wandering aimlessly.'; } }
 function updateBurningGoblins(dt, now) {
     const camp = creature.goblinCampaign; if (!camp) { creature.act = 'free'; return; }
     if (!camp.currentTarget || world.goblins.indexOf(camp.currentTarget) < 0) {
-        let next = camp.lastTargetPos
-            ? nearestIn(world.goblins, camp.lastTargetPos.x, camp.lastTargetPos.y, GOBLIN_CHAIN_RANGE_PX)
-            : nearestIn(world.goblins, creature.x + 30, creature.y + 33, Infinity);
-        if (!next) { endGoblinCampaign(); return; }
-        camp.currentTarget = next.obj;
+        let next = camp.lastTargetPos ? nearestIn(world.goblins, camp.lastTargetPos.x, camp.lastTargetPos.y, GOBLIN_CHAIN_RANGE_PX) : nearestIn(world.goblins, creature.x + 30, creature.y + 33, Infinity);
+        if (!next) { endGoblinCampaign(); return; } camp.currentTarget = next.obj;
     }
-    const o = camp.currentTarget;
-    const d = Math.hypot(o.x - (creature.x + 30), o.y - (creature.y + 33));
-    if (d > FIREBALL_RANGE_PX) { stepCreatureToward(o.x, o.y, SEEK_SPEED_MPS * PIXELS_PER_METER * dt * runMult()); statusBox.innerText = 'Hunting goblins...'; }
+    const o = camp.currentTarget, d = Math.hypot(o.x - (creature.x + 30), o.y - (creature.y + 33));
+    if (d > BURN_APPROACH_PX) { stepCreatureToward(o.x, o.y, SEEK_SPEED_MPS * PIXELS_PER_METER * dt * runMult()); statusBox.innerText = 'Hunting goblins...'; }
     else if (now >= camp.nextThrowReady) { statusBox.innerText = 'Burning goblins!'; spawnFireballAt(o, world.goblins); camp.lastTargetPos = { x: o.x, y: o.y }; camp.currentTarget = null; camp.nextThrowReady = now + FIREBALL_COOLDOWN_MS; }
     else statusBox.innerText = 'Reloading...';
 }
 
-// ---- Guard the village ----
+// Guard the village
 function startGuard(now) {
     if (!world.huts.length) { statusBox.innerText = 'No village to guard.'; creatureSays('(no village to guard.)'); creature.act = 'free'; return; }
-    const cx = creature.x + 30, cy = creature.y + 33; let best = null, bd = Infinity;
-    for (const h of world.huts) { const c = { x: h.x + 25, y: h.y + 25 }; const d = Math.hypot(c.x - cx, c.y - cy); if (d < bd) { bd = d; best = c; } }
+    const best = nearestHutCenter(creature.x + 30, creature.y + 33);
     creature.guard = { anchor: best, heading: Math.random() * Math.PI * 2, patrolUntil: 0 };
     creature.act = 'guarding'; statusBox.innerText = 'Heading to the village.';
 }
@@ -414,17 +453,17 @@ function updateGuard(dt, now) {
     const g = creature.guard; if (!g) { creature.act = 'free'; return; }
     const enemy = nearestIn(world.goblins, creature.x + 30, creature.y + 33, GUARD_ENEMY_RANGE_PX);
     if (enemy) { startGoblinCampaign(now, true); return; }
-    const cx = creature.x + 30, cy = creature.y + 33, d = Math.hypot(g.anchor.x - cx, g.anchor.y - cy);
-    if (d > m2px(8)) { stepCreatureToward(g.anchor.x, g.anchor.y, WALK_SPEED_MPS * PIXELS_PER_METER * dt * runMult()); statusBox.innerText = 'Heading to the village.'; }
+    const d = Math.hypot(g.anchor.x - (creature.x + 30), g.anchor.y - (creature.y + 33));
+    if (d > m2px(8)) { stepCreatureToward(g.anchor.x, g.anchor.y, WANDER_SPEED_MPS * PIXELS_PER_METER * dt * runMult()); statusBox.innerText = 'Heading to the village.'; }
     else {
         if (now >= g.patrolUntil) { g.heading = Math.random() * Math.PI * 2; g.patrolUntil = now + (1000 + Math.random() * 2000); statusBox.innerText = 'Guarding the village.'; }
-        const sp = WALK_SPEED_MPS * 0.1 * PIXELS_PER_METER * dt * runMult();   // patrol at 10%
+        const sp = WANDER_SPEED_MPS * 0.1 * PIXELS_PER_METER * dt * runMult();
         const nx = creature.x + Math.cos(g.heading) * sp, ny = creature.y + Math.sin(g.heading) * sp;
         if (Math.hypot((nx + 30) - g.anchor.x, (ny + 33) - g.anchor.y) < m2px(12) && !isWater(nx + 30, ny + 60, 12)) { creature.x = nx; creature.y = ny; } else g.heading += Math.PI;
     }
 }
 
-// ---- Villager interaction ----
+// Villager interaction
 function finishInteraction() { creature.act = 'free'; creature.interactCooldown = Date.now() + INTERACT_COOLDOWN_MS; statusBox.innerText = "Wandering aimlessly."; }
 function startVillagerInteraction(v) { creature.act = 'busy'; statusBox.innerText = "Approaching a villager."; sendVillagerInteraction(v); }
 async function sendVillagerInteraction(v) {
@@ -476,7 +515,7 @@ function draw(ts) {
     drawCreature();
     ctx.restore();
 
-    updateVillagers();
+    updateVillagers(dt, now);
     updateCreature(dt, now);
     updateProjectiles();
     updateGoblins(dt);
@@ -500,12 +539,12 @@ async function sendCommandToGemini(userMessage) {
 World summary (counts): ${JSON.stringify(worldSummary)}
 
 You are a fire-throwing tiger. Choose ONE action:
-- "burn": fireball the nearest matching thing (you auto-walk within 15m first). Set "target": "tree","villager","hut","crop","goblin","any". Maps: "burn a <thing>","throw a fireball","torch it","blow something up","incinerate <thing>".
-- "burn_goblins": hunt and fireball goblins one after another. Maps: "burn goblins","burn some goblins","kill the goblins","clear the goblins","torch the goblins".
-- "run": move at double speed (uses stamina). Maps: "run","hurry","go faster","move faster","pick up the pace","sprint".
+- "burn": walk right up to the nearest matching thing and fireball it. Set "target": "tree","villager","hut","crop","goblin","any". Maps: "burn a <thing>","throw a fireball","torch it","blow something up","incinerate <thing>".
+- "burn_goblins": hunt and fireball goblins one after another. Maps: "burn goblins","burn some goblins","kill the goblins","clear the goblins".
+- "run": move at double speed (uses stamina). Maps: "run","hurry","go faster","move faster","sprint","pick up the pace".
 - "stop_running": stop running but keep doing the rest. Maps: "slow down","don't rush","ease up","walk".
 - "guard": go to the nearest village and patrol it, auto-attacking goblins that come near. Maps: "guard the village","defend the village","protect the town".
-- "stop": cancel whatever the creature is currently doing. Maps: "stop","cancel","halt","that's enough","nevermind".
+- "stop": cancel whatever the creature is doing. Maps: "stop","cancel","halt","that's enough","nevermind".
 - "grow": grow more nature.   - "spread_huts": add a hut.   - "speak": only talk.   - "idle": do nothing.
 
 Your "speech" MUST be in your established voice/personality.
@@ -548,6 +587,7 @@ buildWaterLayer();
 loadCreatureVoice();
 renderHearts(creature.hearts);
 renderStamina(creature.stamina);
+canvas.style.cursor = 'grab';
 camera.x = creature.x - (canvas.width / zoom) / 2;
 camera.y = creature.y - (canvas.height / zoom) / 2;
 clampCamera();
