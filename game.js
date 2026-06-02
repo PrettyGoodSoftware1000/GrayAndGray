@@ -463,16 +463,55 @@ function updateGuard(dt, now) {
     }
 }
 
+// ---- Shared Gemini call: thinking OFF, JSON output, robust parsing ----
+let apiInFlight = 0;
+async function callGemini(taskText, maxTokens = 800) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+    const body = {
+        systemInstruction: { parts: [{ text: buildPersona() }] },
+        contents: [{ role: "user", parts: [{ text: taskText }] }],
+        generationConfig: {
+            temperature: 0.9,
+            maxOutputTokens: maxTokens,
+            responseMimeType: "application/json",
+            thinkingConfig: { thinkingBudget: 0 }   // no thinking -> fast, and never an empty MAX_TOKENS reply
+        }
+    };
+    apiInFlight++;
+    try {
+        const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        if (!res.ok) {
+            let detail = ""; try { detail = (await res.json())?.error?.message || ""; } catch (e) { }
+            if (res.status === 429) throw new Error("rate limited (429) — too many requests, wait a moment");
+            if (res.status === 400 && /api[_ ]?key/i.test(detail)) throw new Error("bad API key (400) — re-enter it via ESC");
+            throw new Error(`HTTP ${res.status}${detail ? " — " + detail.slice(0, 120) : ""}`);
+        }
+        const data = await res.json();
+        if (data.promptFeedback && data.promptFeedback.blockReason) throw new Error("blocked: " + data.promptFeedback.blockReason);
+        const cand = data.candidates && data.candidates[0];
+        const parts = (cand && cand.content && cand.content.parts) || [];
+        const txt = parts.map(p => p.text || "").join("").trim();
+        if (!txt) throw new Error("empty reply" + (cand && cand.finishReason ? " (" + cand.finishReason + ")" : ""));
+        return txt.replace(/```json|```/g, "").trim();
+    } finally { apiInFlight--; }
+}
+
 // Villager interaction
 function finishInteraction() { creature.act = 'free'; creature.interactCooldown = Date.now() + INTERACT_COOLDOWN_MS; statusBox.innerText = "Wandering aimlessly."; }
-function startVillagerInteraction(v) { creature.act = 'busy'; statusBox.innerText = "Approaching a villager."; sendVillagerInteraction(v); }
-async function sendVillagerInteraction(v) {
-    const apply = (a) => { if (a === 'eat') { const i = world.villagers.indexOf(v); if (i >= 0) world.villagers.splice(i, 1); } };
-    if (!GEMINI_API_KEY) { const acts = ['speak', 'eat', 'hug', 'slap', 'fart']; const a = acts[Math.floor(Math.random() * acts.length)]; const lines = { speak: '(leans down and mutters to a villager.)', eat: '(scoops up a villager and eats them. Crunch.)', hug: '(wraps a villager in a giant hug.)', slap: '(slaps a villager. Rude.)', fart: '(turns and farts on a villager.)' }; creatureSays(lines[a]); apply(a); finishInteraction(); return; }
-    statusBox.innerText = "Greeting a villager...";
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
-    const task = `You wandered right up to a villager. Choose EXACTLY ONE action: "speak","eat","hug","slap","fart". Then narrate what happens in ONE short line, in your voice. Respond ONLY with raw JSON: {"action":"speak|eat|hug|slap|fart","speech":"..."}`;
-    try { const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: buildPersona() }] }, contents: [{ parts: [{ text: task }] }] }) }); const data = await res.json(); let txt = data.candidates[0].content.parts[0].text.trim().replace(/```json|```/g, ""); const d = JSON.parse(txt); if (d.speech) creatureSays(d.speech); apply((d.action || '').toLowerCase()); } catch (err) { console.error(err); creatureSays("(does something to a villager.)"); }
+function startVillagerInteraction(v) { creature.act = 'busy'; statusBox.innerText = "Bothering a villager."; doVillagerInteraction(v); }
+// Fully scripted — villagers never touch the Gemini API.
+function doVillagerInteraction(v) {
+    const lines = {
+        speak: ['(leans down and mutters something to a villager.)', '(rumbles a few words at a tiny villager.)'],
+        eat: ['(scoops up a villager and eats them. Crunch.)', '(swallows a villager whole.)'],
+        hug: ['(wraps a villager in a giant, slightly crushing hug.)', '(gives a villager an enormous hug.)'],
+        slap: ['(slaps a villager flat. Rude.)', '(bats a villager over with one paw.)'],
+        fart: ['(turns and farts on a villager.)', '(unleashes a thunderous fart on a villager.)']
+    };
+    const acts = Object.keys(lines);
+    const a = acts[Math.floor(Math.random() * acts.length)];
+    const pool = lines[a]; creatureSays(pool[Math.floor(Math.random() * pool.length)]);
+    if (a === 'eat') { const i = world.villagers.indexOf(v); if (i >= 0) world.villagers.splice(i, 1); }
     finishInteraction();
 }
 
@@ -530,8 +569,7 @@ function draw(ts) {
 // ===========================================================
 async function sendCommandToGemini(userMessage) {
     if (!GEMINI_API_KEY) { creatureSays("(No API key yet — press ESC to open settings and add your Gemini key.)"); return; }
-    statusBox.innerText = "Thinking..."; updateLog(`Sending command to brain: "${userMessage}"`);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    statusBox.innerText = "Thinking..."; updateLog(`Command -> brain: "${userMessage}"`);
     const worldSummary = { trees: world.trees.length, huts: world.huts.length, villagers: world.villagers.length, crops: world.crops.length, goblins: world.goblins.length, shrines: world.shrines.length };
     const taskPrompt =
 `The player just said: "${userMessage}".
@@ -552,8 +590,7 @@ Your "speech" MUST be in your established voice/personality.
 Respond ONLY with raw JSON (no fences):
 {"action":"burn|burn_goblins|run|stop_running|guard|stop|grow|spread_huts|speak|idle","target":"tree|villager|hut|crop|goblin|any|null","speech":"in-character line","shortStatusText":"1-6 words"}`;
     try {
-        const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: buildPersona() }] }, contents: [{ parts: [{ text: taskPrompt }] }] }) });
-        const data = await response.json(); let txt = data.candidates[0].content.parts[0].text.trim().replace(/```json|```/g, ""); const d = JSON.parse(txt);
+        const d = JSON.parse(await callGemini(taskPrompt));
         if (d.speech) creatureSays(d.speech);
         switch (d.action) {
             case "burn": performBurn(d.target); break;
@@ -566,7 +603,12 @@ Respond ONLY with raw JSON (no fences):
             case "spread_huts": castSpreadHuts(); break;
         }
         if (d.shortStatusText && d.action !== 'stop') statusBox.innerText = d.shortStatusText;
-    } catch (error) { console.error("API Error:", error); updateLog("Error connecting to Gemini API. Check the console / API key."); }
+    } catch (error) {
+        console.error("API Error:", error);
+        updateLog("Gemini error: " + error.message);
+        creatureSays("(can't reach my brain right now — " + error.message + ")");
+        if (statusBox.innerText === "Thinking...") statusBox.innerText = "Wandering aimlessly.";
+    }
 }
 
 // ===========================================================
