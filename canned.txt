@@ -11,6 +11,10 @@ burn a villager
 burn a crop
 burn a goblin
 torch a tree
+burn goblin
+burn tree
+burn hut
+burn the hut
 
 [burn_many]
 burn goblins
@@ -18,10 +22,15 @@ burn some goblins
 burn the goblins
 burn some trees
 burn the trees
+burn trees
 burn some huts
 burn the huts
+burn huts
 burn the villagers
+burn villagers
 burn everything
+burn those goblins
+burn those villagers
 
 [run]
 run
@@ -29,39 +38,70 @@ hurry
 go faster
 move faster
 sprint
+go go go
+go fast
+fast
+hurry up
+faster
 
 [stop_running]
 slow down
 walk
 stop running
 ease up
+slow
+slow down
+slower
 
 [guard]
 guard the village
 defend the village
 protect the town
+guard
+protect the village
+protect
 
 [stop]
 stop
 cancel
 halt
 that's enough
+cancel 
+cancel that
+stop it
+stop that
 
 [grow]
 grow
 grow nature
 make plants
+grow crops
+grow trees
 
 [spread_huts]
 spread huts
 build a hut
 add a hut
+make huts
+make more huts
+spread the village
+more huts
+more village
+build the village
 
 [speak]
 say something
 talk to me
+talk
+what's up
+hi
+hey
+hello
 
 [idle]
 wait
 do nothing
 stand by
+chill
+chill out
+rest
