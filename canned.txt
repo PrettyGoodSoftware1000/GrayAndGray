@@ -1,0 +1,67 @@
+# canned.txt — exact-match commands that run WITHOUT calling the Gemini API.
+# Headers in [brackets] are the action categories the game understands.
+# Put any phrasings you want under the matching header. Matching is case-insensitive
+# and ignores extra spaces. (For burn lines, the target is read from the words, e.g.
+# "burn a hut" hits a hut; "burn some trees" chains across trees.)
+
+[burn]
+burn a tree
+burn a hut
+burn a villager
+burn a crop
+burn a goblin
+torch a tree
+
+[burn_many]
+burn goblins
+burn some goblins
+burn the goblins
+burn some trees
+burn the trees
+burn some huts
+burn the huts
+burn the villagers
+burn everything
+
+[run]
+run
+hurry
+go faster
+move faster
+sprint
+
+[stop_running]
+slow down
+walk
+stop running
+ease up
+
+[guard]
+guard the village
+defend the village
+protect the town
+
+[stop]
+stop
+cancel
+halt
+that's enough
+
+[grow]
+grow
+grow nature
+make plants
+
+[spread_huts]
+spread huts
+build a hut
+add a hut
+
+[speak]
+say something
+talk to me
+
+[idle]
+wait
+do nothing
+stand by

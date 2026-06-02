@@ -57,6 +57,7 @@ const regenMapBtn = document.getElementById('regen-map-btn');
 const saveFileBtn = document.getElementById('save-file-btn');
 const newGameBtn = document.getElementById('new-game-btn');
 const loadFileBtn = document.getElementById('load-file-btn');
+const logFileBtn = document.getElementById('log-file-btn');
 const loadFileInput = document.getElementById('load-file-input');
 const apiKeyInput = document.getElementById('api-key-input');
 const heartsEl = document.getElementById('hearts');
@@ -280,8 +281,62 @@ function resetCreatureRuntime() {
 //  VOICE
 // ===========================================================
 let voiceStyles = {}; let activeVoice = 'snarky';
-function parseVoiceStyles(text) { const styles = {}; const re = /\[([^\]]+)\]\s*\{([\s\S]*?)\}/g; let m; while ((m = re.exec(text))) { const header = m[1].trim(); const [namePart, ...descParts] = header.split('|'); const name = namePart.trim().toLowerCase(); const description = descParts.join('|').trim(); const examples = m[2].split(/\r?\n/).map(l => l.replace(/^\s*\d+[\.\)]\s*/, '').trim()).filter(l => l.length > 0); if (name) styles[name] = { description, examples }; } return styles; }
-async function loadCreatureVoice() { try { const res = await fetch('CreatureVoice.txt', { cache: 'no-store' }); if (!res.ok) throw new Error('HTTP ' + res.status); voiceStyles = parseVoiceStyles(await res.text()); const names = Object.keys(voiceStyles); if (!names.length) { updateLog("CreatureVoice.txt had no [style]{...} blocks."); return; } if (!voiceStyles[activeVoice]) activeVoice = names[0]; updateLog(`Creature voices: ${names.join(', ')}. Active: "${activeVoice}". (Type "be <style>".)`); } catch (e) { updateLog(`Couldn't read CreatureVoice.txt (${e.message}); using a default voice.`); } }
+let voiceResponses = {};          // { styleName: { action: cannedResponseText } }
+let cannedCommands = {};          // { normalizedText: actionHeader }  (from canned.txt)
+function parseVoiceStyles(text) {
+    const styles = {}; const re = /\[([^\]]+)\]\s*\{([\s\S]*?)\}/g; let m;
+    while ((m = re.exec(text))) {
+        const header = m[1].trim();
+        if (/responses?\s*$/i.test(header)) continue;          // response blocks handled separately
+        const [namePart, ...descParts] = header.split('|'); const name = namePart.trim().toLowerCase(); const description = descParts.join('|').trim();
+        const examples = m[2].split(/\r?\n/).map(l => l.replace(/^\s*\d+[\.\)]\s*/, '').trim()).filter(l => l.length > 0);
+        if (name) styles[name] = { description, examples };
+    }
+    return styles;
+}
+function parseVoiceResponses(text) {
+    const out = {}; const re = /\[([^\]]+)\]\s*\{([\s\S]*?)\}/g; let m;
+    while ((m = re.exec(text))) {
+        const header = m[1].trim();
+        if (!/responses?\s*$/i.test(header)) continue;
+        const style = header.replace(/responses?\s*$/i, '').replace(/[|.]/g, ' ').trim().toLowerCase();
+        if (!style) continue;
+        const map = out[style] || {};
+        m[2].split(/\r?\n/).forEach(line => { const mm = line.match(/^\s*([a-z_]+)\s*[:=]\s*(.+?)\s*$/i); if (mm) map[mm[1].toLowerCase()] = mm[2]; });
+        out[style] = map;
+    }
+    return out;
+}
+function cannedResponse(style, action) {
+    const m = voiceResponses[(style || '').toLowerCase()] || {};
+    const dflt = voiceResponses['default'] || {};
+    return m[action] || dflt[action] || null;
+}
+async function loadCreatureVoice() {
+    try {
+        const res = await fetch('CreatureVoice.txt', { cache: 'no-store' }); if (!res.ok) throw new Error('HTTP ' + res.status);
+        const text = await res.text();
+        voiceStyles = parseVoiceStyles(text); voiceResponses = parseVoiceResponses(text);
+        const names = Object.keys(voiceStyles);
+        if (!names.length) { updateLog("CreatureVoice.txt had no [style]{...} blocks."); return; }
+        if (!voiceStyles[activeVoice]) activeVoice = names[0];
+        const rc = Object.keys(voiceResponses).length;
+        updateLog(`Creature voices: ${names.join(', ')}. Active: "${activeVoice}".` + (rc ? ` Canned responses for: ${Object.keys(voiceResponses).join(', ')}.` : ''));
+    } catch (e) { updateLog(`Couldn't read CreatureVoice.txt (${e.message}); using a default voice.`); }
+}
+// canned.txt: headers in [brackets] are action categories; lines under them are exact command phrases.
+async function loadCanned() {
+    try {
+        const res = await fetch('canned.txt', { cache: 'no-store' }); if (!res.ok) throw new Error('HTTP ' + res.status);
+        const text = await res.text(); cannedCommands = {}; let cur = null;
+        text.split(/\r?\n/).forEach(line => {
+            const l = line.trim(); if (!l || l.startsWith('#') || l.startsWith('//')) return;
+            const h = l.match(/^\[(.+?)\]$/); if (h) { cur = h[1].trim().toLowerCase(); return; }
+            if (cur) cannedCommands[normalizeCmd(l)] = cur;
+        });
+        updateLog(`Loaded ${Object.keys(cannedCommands).length} canned commands (no API needed for these).`);
+    } catch (e) { updateLog(`No canned.txt (${e.message}) — every command will use the API.`); }
+}
 function buildPersona() { let base = `You are the brain of EGG, a giant bipedal fire-throwing tiger in a god-game. A human gives you divine voice commands; you respond out loud and may act on the world.`; const style = voiceStyles[activeVoice]; if (style && style.examples.length) { base += `\n\nYour personality/voice is "${activeVoice}"`; if (style.description) base += `: ${style.description}`; base += `.\nExamples of how you talk. Imitate the tone/attitude/word choice; do NOT copy verbatim:\n` + style.examples.map(e => `- ${e}`).join('\n') + `\n\nAlways speak in this voice.`; } else base += `\n\nSpeak with a little personality.`; return base; }
 function trySwitchVoice(cmd) { const m = cmd.match(/^\s*be\s+(?:an?\s+|more\s+)?([a-zA-Z]+)\s*[.!]?\s*$/i); if (!m) return false; const name = m[1].toLowerCase(); if (voiceStyles[name]) { activeVoice = name; narratorSays(`Now speaking in "${name}" style.`); updateLog(`Voice switched to "${name}".`); return true; } return false; }
 
@@ -659,6 +714,7 @@ Respond ONLY with raw JSON (no fences):
         const prev = rerunMemory[key] || { count: 0 };
         rerunMemory[key] = { action: d.action, target: d.target || null, speech: d.speech || '', count: (prev.count || 0) + 1, lastUsed: Date.now() };
         saveRerunMemory();
+        logAiCommand(userMessage, d.action, activeVoice, d.speech || '');   // record non-canned input for later curation
     } catch (error) {
         console.error("API Error:", error);
         updateLog("Gemini error: " + error.message);
@@ -711,20 +767,45 @@ function applyBurnIntent(d, text) {
     return d;
 }
 
+// ---- AI command log: every NON-canned input + the personality + AI response, grouped by action ----
+let aiCommandLog = {};
+function loadAiLog() { try { aiCommandLog = JSON.parse(localStorage.getItem('aiCommandLog') || '{}') || {}; } catch (e) { aiCommandLog = {}; } }
+function saveAiLog() { try { localStorage.setItem('aiCommandLog', JSON.stringify(aiCommandLog)); } catch (e) { } }
+function logAiCommand(input, action, voice, response) {
+    const k = action || 'idle'; if (!aiCommandLog[k]) aiCommandLog[k] = [];
+    const norm = normalizeCmd(input);
+    const existing = aiCommandLog[k].find(e => normalizeCmd(e.input) === norm && e.voice === voice);
+    if (existing) { existing.count = (existing.count || 1) + 1; existing.response = response; }
+    else aiCommandLog[k].push({ input, voice, response, count: 1 });
+    saveAiLog();
+}
+
+// Run a canned command (exact match from canned.txt) — NO API CALL
+function runCanned(cmd, headerAction) {
+    let action = headerAction, target = null;
+    const bi = burnIntent(cmd);                       // burn lines derive precise action/target from their text
+    if (bi) { action = bi.many ? 'burn_many' : 'burn'; target = bi.type || 'any'; }
+    const resp = cannedResponse(activeVoice, action); // personality's canned line for this action, if any
+    if (resp) creatureSays(resp);                     // canned speech: red, NO star (no API)
+    else narratorSays("The creature obeys.");         // fallback when CreatureVoice.txt has none
+    executeAction(action, target);
+}
+
 // Entry point for every typed command
 function processCommand(cmd) {
     if (handleControl(cmd)) return;                     // voice / stop / slow-down: instant, client-side
     const key = normalizeCmd(cmd);
+    if (cannedCommands[key]) { runCanned(cmd, cannedCommands[key]); return; }   // canned.txt exact match -> NO API
     const mem = rerunMemory[key];
-    if (mem && mem.count >= 3 && mem.action) {           // known rerun command -> skip the API
+    if (mem && mem.count >= 3 && mem.action) {           // repeated non-canned command -> skip the API too
         narratorSays("The creature obeys.");
         const act = { action: mem.action, target: mem.target };
-        applyBurnIntent(act, cmd);                       // keep "burn some X" correct even when cached
+        applyBurnIntent(act, cmd);
         executeAction(act.action, act.target);
         mem.count++; mem.lastUsed = Date.now(); saveRerunMemory();
         return;
     }
-    sendCommandToGemini(cmd, key);
+    sendCommandToGemini(cmd, key);                       // not canned, not cached -> API (and gets logged)
 }
 
 // ===========================================================
@@ -775,6 +856,36 @@ function downloadSave() {
 regenMapBtn.addEventListener('click', regenerateMap);
 saveFileBtn.addEventListener('click', downloadSave);
 
+// Download the AI command log: non-canned inputs grouped by the action the AI chose,
+// each with the creature's personality and the AI's response — ready to curate into canned.txt / CreatureVoice.txt
+function downloadCommandLog() {
+    const lines = [];
+    lines.push("=== EGG — AI command log ===");
+    lines.push("Inputs that were NOT canned commands (these used the Gemini API).");
+    lines.push("Headers below are the action categories — copy commands into canned.txt,");
+    lines.push("and copy the responses into CreatureVoice.txt under each personality.");
+    lines.push("Generated: " + new Date().toISOString());
+    lines.push("");
+    const keys = Object.keys(aiCommandLog);
+    if (!keys.length) lines.push("(nothing logged yet — every command so far was canned or client-side)");
+    else keys.forEach(action => {
+        lines.push("[" + action + "]");
+        aiCommandLog[action].forEach(e => {
+            lines.push(`  "${e.input}"  (${e.voice}${e.count > 1 ? ' x' + e.count : ''})`);
+            lines.push(`     -> ${e.response || '(no speech)'}`);
+        });
+        lines.push("");
+    });
+    const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `egg-command-log-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+    updateLog("Command log downloaded.");
+}
+logFileBtn.addEventListener('click', downloadCommandLog);
+
 // Import a save file (portable across browsers / machines)
 function importSave(file) {
     const reader = new FileReader();
@@ -816,7 +927,8 @@ function newGame() {
     if (!confirm("Start a NEW GAME?\n\nThis wipes the saved world and your rerun commands from THIS browser. Your API key is kept. (Use \"Save Game to File\" first if you want a backup.)")) return;
     localStorage.removeItem('creatureGameState');
     localStorage.removeItem('rerunCommands');
-    rerunMemory = {};
+    localStorage.removeItem('aiCommandLog');
+    rerunMemory = {}; aiCommandLog = {};
     creature.hearts = 3;
     chatHistory.innerHTML = ''; actionLog.innerHTML = '';
     regenerateMap();                 // fresh world + creature reset + saves
@@ -832,9 +944,11 @@ newGameBtn.addEventListener('click', newGame);
 resizeCanvas();
 buildGrassPattern();
 loadRerunMemory();
+loadAiLog();
 loadGame();
 buildWaterLayer();
 loadCreatureVoice();
+loadCanned();
 renderHearts(creature.hearts);
 renderStamina(creature.stamina);
 canvas.style.cursor = 'grab';

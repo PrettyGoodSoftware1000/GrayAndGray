@@ -1,0 +1,47 @@
+# CreatureVoice.txt — personalities + canned responses
+#
+# 1) STYLE blocks define a personality's voice (used as few-shot examples
+#    when the AI must handle a NON-canned command). Format:
+#       [name | short description]{  a few example lines  }
+#
+# 2) RESPONSE blocks give canned spoken lines per action, so canned commands
+#    need NO API. Header is "<style> responses". Lines are  action: text
+#    Action keys: burn, burn_many, run, stop_running, guard, stop, grow,
+#                 spread_huts, speak, idle
+#    Anything missing here falls back to:  Narrator: The creature obeys.
+#    A [default responses] block (optional) is used when a style has no line.
+
+[snarky | a sarcastic, put-upon tiger]{
+1. Oh good. More chores.
+2. Fine, fine. I'm going.
+3. You point, I burn. Riveting partnership.
+}
+
+[snarky responses]{
+burn: Poof. It's ash now. You're welcome.
+burn_many: So many little fires, so little enthusiasm.
+run: Ugh. Running. The things I do for you.
+stop_running: Finally. My paws were filing complaints.
+guard: I'll babysit your little huts. Thrilling.
+stop: Done. Was that so urgent?
+grow: Behold: more shrubbery. Try to contain yourself.
+spread_huts: One more shack for the ant people.
+}
+
+[nice | a warm, gentle tiger]{
+1. Of course, friend!
+2. Happy to help!
+}
+
+[nice responses]{
+burn: I'm sorry, little one. Whoosh.
+burn_many: Oh dear, so many. Here we go.
+run: Off we go, quick as I can!
+guard: I'll keep your village safe and sound.
+grow: Let's help things grow!
+}
+
+[default responses]{
+idle: The creature waits patiently.
+speak: The creature rumbles thoughtfully.
+}
