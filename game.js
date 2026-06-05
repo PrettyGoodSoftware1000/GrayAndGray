@@ -11,7 +11,8 @@
    - Villagers stroll near their hut; goblins march & charge
    =========================================================== */
 
-const VERSION = "egg-v2.2";
+const VERSION = "egg-v2.2";          // save-schema version (only bump when world data changes)
+const GAME_VERSION = "2.3";          // displayed build version — bump on every update
 
 const PIXELS_PER_METER = 10;
 const m2px = (m) => m * PIXELS_PER_METER;
@@ -59,14 +60,24 @@ const newGameBtn = document.getElementById('new-game-btn');
 const loadFileBtn = document.getElementById('load-file-btn');
 const logFileBtn = document.getElementById('log-file-btn');
 const loadFileInput = document.getElementById('load-file-input');
-const apiKeyInput = document.getElementById('api-key-input');
+const gameTitleEl = document.getElementById('game-title');
+const keysBtn = document.getElementById('keys-btn');
+const keysModal = document.getElementById('keys-modal');
+const keysList = document.getElementById('keys-list');
+const addKeyBtn = document.getElementById('add-key-btn');
+const keysFromFileBtn = document.getElementById('keys-from-file-btn');
+const keysFileInput = document.getElementById('keys-file-input');
+const keysSaveBtn = document.getElementById('keys-save-btn');
+const keysCloseBtn = document.getElementById('keys-close-btn');
 const heartsEl = document.getElementById('hearts');
 const staminaEl = document.getElementById('stamina');
 
 const WORLD_W = 3000, WORLD_H = 2200;
 
 let isPaused = false;
-let GEMINI_API_KEY = "";
+let apiKeys = [];          // up to many Gemini keys; rotated across requests / on rate limits
+let keyIndex = 0;
+const MAX_KEY_FIELDS = 5;  // manual "+" fields cap; file upload may add more
 
 let camera = { x: 0, y: 0 };
 let zoom = 1;
@@ -249,8 +260,8 @@ function drawRuler() {
     const leftM = camera.x / PIXELS_PER_METER, rightM = (camera.x + canvas.width / zoom) / PIXELS_PER_METER;
     for (let m = Math.ceil(leftM / 2) * 2; m <= rightM; m += 2) { const sx = (m * PIXELS_PER_METER - camera.x) * zoom; const major = (m % 10 === 0); r.beginPath(); r.moveTo(sx, 30); r.lineTo(sx, major ? 13 : 22); r.stroke(); if (major) r.fillText(m + 'm', sx + 2, 2); }
 }
-function pauseGame() { isPaused = true; apiKeyInput.value = GEMINI_API_KEY; pausePanel.classList.add('open'); rulerCanvas.style.display = 'block'; drawRuler(); }
-function resumeGame() { GEMINI_API_KEY = apiKeyInput.value.trim(); localStorage.setItem('gemini_api_key', GEMINI_API_KEY); pausePanel.classList.remove('open'); rulerCanvas.style.display = 'none'; isPaused = false; lastTs = null; updateLog("Game resumed."); requestAnimationFrame(draw); }
+function pauseGame() { isPaused = true; pausePanel.classList.add('open'); rulerCanvas.style.display = 'block'; drawRuler(); }
+function resumeGame() { closeKeysModal(); pausePanel.classList.remove('open'); rulerCanvas.style.display = 'none'; isPaused = false; lastTs = null; updateLog("Game resumed."); requestAnimationFrame(draw); }
 function togglePause() { isPaused ? resumeGame() : pauseGame(); }
 saveSettingsBtn.addEventListener('click', resumeGame);
 
@@ -263,8 +274,6 @@ function loadGame() {
     if (saved) { try { const data = JSON.parse(saved); if (data.version === VERSION && data.world && data.world.rivers) { world = data.world; creature = data.creature; if (data.camera) camera = data.camera; if (data.zoom) zoom = data.zoom; normalizeWorld(); updateLog("World state loaded."); ok = true; } } catch (e) { console.warn("Bad save, regenerating.", e); } }
     if (!ok) generateWorld();
     resetCreatureRuntime();
-    const savedKey = localStorage.getItem('gemini_api_key');
-    if (savedKey) GEMINI_API_KEY = savedKey; else updateLog("No Gemini API Key yet. Press ESC to open settings and add one.");
 }
 // Reset transient/runtime creature fields (preserves stamina/hearts/position if already set)
 function resetCreatureRuntime() {
@@ -344,7 +353,7 @@ function trySwitchVoice(cmd) { const m = cmd.match(/^\s*be\s+(?:an?\s+|more\s+)?
 //  INPUT
 // ===========================================================
 const MOVE_KEYS = ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
-function typingInInput() { return document.activeElement === commandInput || document.activeElement === apiKeyInput; }
+function typingInInput() { const ae = document.activeElement; return !!ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA'); }
 window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     if (k === 'escape') { e.preventDefault(); togglePause(); return; }
@@ -574,36 +583,40 @@ function updateGuard(dt, now) {
     }
 }
 
-// ---- Shared Gemini call: thinking OFF, JSON output, robust parsing ----
+// ---- Shared Gemini call: rotates keys, thinking OFF, JSON output, robust parsing ----
 let apiInFlight = 0;
 async function callGemini(taskText, maxTokens = 800) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+    if (!apiKeys.length) throw new Error('no API key — click "Keys" in the pause menu (ESC)');
     const body = {
         systemInstruction: { parts: [{ text: buildPersona() }] },
         contents: [{ role: "user", parts: [{ text: taskText }] }],
-        generationConfig: {
-            temperature: 0.9,
-            maxOutputTokens: maxTokens,
-            responseMimeType: "application/json",
-            thinkingConfig: { thinkingBudget: 0 }   // no thinking -> fast, and never an empty MAX_TOKENS reply
-        }
+        generationConfig: { temperature: 0.9, maxOutputTokens: maxTokens, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 } }
     };
     apiInFlight++;
     try {
-        const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        if (!res.ok) {
-            let detail = ""; try { detail = (await res.json())?.error?.message || ""; } catch (e) { }
-            if (res.status === 429) throw new Error("rate limited (429) — too many requests, wait a moment");
-            if (res.status === 400 && /api[_ ]?key/i.test(detail)) throw new Error("bad API key (400) — re-enter it via ESC");
-            throw new Error(`HTTP ${res.status}${detail ? " — " + detail.slice(0, 120) : ""}`);
+        let lastErr = null;
+        for (let attempt = 0; attempt < apiKeys.length; attempt++) {       // try each key once
+            const key = apiKeys[keyIndex % apiKeys.length];
+            keyIndex = (keyIndex + 1) % apiKeys.length;                     // round-robin for next call/retry
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`;
+            const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+            if (!res.ok) {
+                let detail = ""; try { detail = (await res.json())?.error?.message || ""; } catch (e) { }
+                if (res.status === 429 || res.status === 403 || (res.status === 400 && /api[_ ]?key/i.test(detail))) {
+                    lastErr = new Error(res.status === 429 ? "rate limited (429)" : "key rejected (" + res.status + ")");
+                    continue;                                               // bad/limited key -> try the next one
+                }
+                throw new Error(`HTTP ${res.status}${detail ? " — " + detail.slice(0, 120) : ""}`);
+            }
+            const data = await res.json();
+            if (data.promptFeedback && data.promptFeedback.blockReason) throw new Error("blocked: " + data.promptFeedback.blockReason);
+            const cand = data.candidates && data.candidates[0];
+            const parts = (cand && cand.content && cand.content.parts) || [];
+            const txt = parts.map(p => p.text || "").join("").trim();
+            if (!txt) throw new Error("empty reply" + (cand && cand.finishReason ? " (" + cand.finishReason + ")" : ""));
+            return txt.replace(/```json|```/g, "").trim();
         }
-        const data = await res.json();
-        if (data.promptFeedback && data.promptFeedback.blockReason) throw new Error("blocked: " + data.promptFeedback.blockReason);
-        const cand = data.candidates && data.candidates[0];
-        const parts = (cand && cand.content && cand.content.parts) || [];
-        const txt = parts.map(p => p.text || "").join("").trim();
-        if (!txt) throw new Error("empty reply" + (cand && cand.finishReason ? " (" + cand.finishReason + ")" : ""));
-        return txt.replace(/```json|```/g, "").trim();
+        throw new Error((lastErr ? lastErr.message : "all keys failed") + " — all " + apiKeys.length + " key(s) exhausted");
     } finally { apiInFlight--; }
 }
 
@@ -682,7 +695,7 @@ function draw(ts) {
 //  GEMINI (commands)
 // ===========================================================
 async function sendCommandToGemini(userMessage, key) {
-    if (!GEMINI_API_KEY) { narratorSays("No API key yet — press ESC to open settings and add your Gemini key."); return; }
+    if (!apiKeys.length) { narratorSays('No API key set — open the pause menu (ESC) and click "Keys" to add one.'); return; }
     key = key || normalizeCmd(userMessage);
     statusBox.innerText = "Thinking..."; updateLog(`Command -> brain: "${userMessage}"`);
     const worldSummary = { trees: world.trees.length, huts: world.huts.length, villagers: world.villagers.length, crops: world.crops.length, goblins: world.goblins.length, shrines: world.shrines.length };
@@ -835,6 +848,7 @@ function downloadSave() {
     const state = { version: VERSION, savedAt: new Date().toISOString(), world, creature, camera, zoom, rerunCommands: rerunMemory };
     const lines = [];
     lines.push("=== EGG V2 SAVE ===");
+    lines.push("Build: v" + GAME_VERSION);
     lines.push("Saved: " + state.savedAt);
     lines.push("Active voice: " + activeVoice);
     lines.push("");
@@ -939,12 +953,70 @@ function newGame() {
 newGameBtn.addEventListener('click', newGame);
 
 // ===========================================================
+//  API KEYS
+// ===========================================================
+function loadApiKeys() {
+    try { apiKeys = JSON.parse(localStorage.getItem('geminiApiKeys') || '[]') || []; } catch (e) { apiKeys = []; }
+    if (!Array.isArray(apiKeys)) apiKeys = [];
+    const legacy = localStorage.getItem('gemini_api_key');            // migrate the old single-key storage
+    if (legacy && !apiKeys.includes(legacy)) { apiKeys.unshift(legacy); localStorage.setItem('geminiApiKeys', JSON.stringify(apiKeys)); }
+    keyIndex = 0;
+    if (apiKeys.length) updateLog(apiKeys.length + " API key(s) loaded.");
+    else updateLog('No API keys yet — open the pause menu (ESC) and click "Keys".');
+}
+function currentKeyFieldValues() { return Array.from(keysList.querySelectorAll('.key-input')).map(i => i.value); }
+function updateAddKeyBtn() { addKeyBtn.disabled = keysList.querySelectorAll('.key-input').length >= MAX_KEY_FIELDS; }
+function renderKeysList(values) {
+    keysList.innerHTML = '';
+    if (!values || !values.length) values = [''];
+    values.forEach((v, idx) => {
+        const row = document.createElement('div'); row.className = 'key-row';
+        const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'key-input'; inp.value = v; inp.placeholder = 'AIza… (key ' + (idx + 1) + ')'; inp.spellcheck = false; inp.autocomplete = 'off';
+        const rm = document.createElement('button'); rm.type = 'button'; rm.className = 'key-remove'; rm.textContent = '×'; rm.title = 'remove this key';
+        rm.addEventListener('click', () => { const vals = currentKeyFieldValues(); vals.splice(idx, 1); renderKeysList(vals); });
+        row.appendChild(inp); row.appendChild(rm); keysList.appendChild(row);
+    });
+    updateAddKeyBtn();
+}
+function openKeysModal() { renderKeysList(apiKeys.length ? apiKeys.slice() : ['']); keysModal.classList.add('open'); }
+function closeKeysModal() { keysModal.classList.remove('open'); }
+function saveKeys() {
+    const vals = currentKeyFieldValues().map(s => s.trim()).filter(Boolean);
+    apiKeys = [...new Set(vals)];
+    localStorage.setItem('geminiApiKeys', JSON.stringify(apiKeys));
+    keyIndex = 0;
+    updateLog("Saved " + apiKeys.length + " API key(s).");
+    closeKeysModal();
+}
+function keysFromFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+        const keys = String(reader.result || "").split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('#') && !s.startsWith('//'));
+        if (!keys.length) { alert("No keys found in that file. Put one key per line."); return; }
+        const merged = [...new Set([...currentKeyFieldValues().map(s => s.trim()).filter(Boolean), ...keys])];
+        renderKeysList(merged);
+        updateLog("Loaded " + keys.length + " key(s) from file — review, then click Save Keys.");
+    };
+    reader.onerror = () => updateLog("Couldn't read that key file.");
+    reader.readAsText(file);
+}
+keysBtn.addEventListener('click', openKeysModal);
+keysCloseBtn.addEventListener('click', closeKeysModal);
+keysSaveBtn.addEventListener('click', saveKeys);
+addKeyBtn.addEventListener('click', () => { const vals = currentKeyFieldValues(); if (vals.length < MAX_KEY_FIELDS) { vals.push(''); renderKeysList(vals); } });
+keysFromFileBtn.addEventListener('click', () => keysFileInput.click());
+keysFileInput.addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; if (f) keysFromFile(f); keysFileInput.value = ''; });
+keysModal.addEventListener('click', (e) => { if (e.target === keysModal) closeKeysModal(); });   // click backdrop to close
+
+// ===========================================================
 //  INIT
 // ===========================================================
+if (gameTitleEl) gameTitleEl.textContent = '🥚 Egg v' + GAME_VERSION;
 resizeCanvas();
 buildGrassPattern();
 loadRerunMemory();
 loadAiLog();
+loadApiKeys();
 loadGame();
 buildWaterLayer();
 loadCreatureVoice();

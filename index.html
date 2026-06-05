@@ -170,6 +170,32 @@
             flex: 0 0 auto;
         }
         button:hover { filter: brightness(1.15); }
+
+        /* Keys modal */
+        #keys-modal {
+            display: none;
+            position: fixed; inset: 0;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 100;
+            align-items: center; justify-content: center;
+        }
+        #keys-modal.open { display: flex; }
+        #keys-modal .modal-box {
+            background: #222; border: 3px solid var(--panel-border);
+            border-radius: 8px; padding: 18px; width: min(520px, 92vw);
+            max-height: 88vh; overflow-y: auto;
+            display: flex; flex-direction: column; gap: 10px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+        }
+        #keys-modal h2 { margin: 0; color: #fff; }
+        #keys-modal .modal-hint { margin: 0; color: #999; font-size: 0.82em; }
+        #keys-modal .modal-row { display: flex; gap: 8px; }
+        #keys-modal .modal-row button { flex: 1 1 auto; }
+        #keys-list { display: flex; flex-direction: column; gap: 6px; }
+        .key-row { display: flex; gap: 6px; align-items: center; }
+        .key-row .key-input { flex: 1 1 auto; }
+        .key-remove { flex: 0 0 auto; background: #7a2e2e; padding: 6px 10px; }
+        .ghost-btn { background: #333; }
     </style>
 </head>
 <body>
@@ -178,7 +204,7 @@
     <canvas id="ruler"></canvas>
 
     <div id="hud">
-        <b>🥚 Egg V2</b><br>
+        <b id="game-title">🥚 Egg V2</b><br>
         <span id="controls-hint">WASD / Arrows to scroll the world &middot; ESC to pause</span>
         <div id="creature-status">Wandering aimlessly.</div>
     </div>
@@ -187,9 +213,8 @@
     <div id="pause-panel">
         <h2>&#9208; Paused</h2>
         <div class="settings-section">
-            <label for="api-key-input">Gemini API Key:</label>
-            <input type="password" id="api-key-input" placeholder="AIzaSy...">
-            <button id="save-settings-btn">Save &amp; Resume</button>
+            <button id="keys-btn">&#128273; Keys</button>
+            <button id="save-settings-btn">Resume</button>
         </div>
         <div class="settings-section">
             <button id="regen-map-btn">&#127758; Regenerate the Map</button>
@@ -202,6 +227,24 @@
         <h3>Action Log</h3>
         <div id="action-log" class="log"></div>
         <p class="resume-hint">Press ESC again to resume.</p>
+    </div>
+
+    <!-- API Keys modal (centered) -->
+    <div id="keys-modal">
+        <div class="modal-box">
+            <h2>&#128273; API Keys</h2>
+            <p class="modal-hint">Stored in this browser only. Up to 5 fields here, or load any number from a file. Keys are rotated across requests and on rate limits.</p>
+            <div id="keys-list"></div>
+            <button id="add-key-btn" class="ghost-btn">+ Add another key</button>
+            <div class="modal-row">
+                <button id="keys-from-file-btn">Add Keys from File</button>
+                <input type="file" id="keys-file-input" accept=".txt,text/plain" style="display:none">
+            </div>
+            <div class="modal-row">
+                <button id="keys-save-btn">Save Keys</button>
+                <button id="keys-close-btn">Close</button>
+            </div>
+        </div>
     </div>
 
     <div id="vitals">
