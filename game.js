@@ -12,7 +12,7 @@
    =========================================================== */
 
 const VERSION = "egg-v2.2";          // save-schema version (only bump when world data changes)
-const GAME_VERSION = "2.3";          // displayed build version — bump on every update
+const GAME_VERSION = "2.4";          // displayed build version — bump on every update
 
 const PIXELS_PER_METER = 10;
 const m2px = (m) => m * PIXELS_PER_METER;
@@ -128,32 +128,52 @@ window.addEventListener('mouseup', () => { if (dragging) { dragging = false; can
 // ===========================================================
 //  SPRITES
 // ===========================================================
-const SPRITE_KEYS = ['creature', 'tree', 'hut', 'villager', 'crop', 'shrine', 'fireball', 'goblin', 'ashes'];
+const SPRITE_KEYS = ['creature', 'tree', 'hut', 'villager', 'fireball', 'goblin', 'ashes'];
 const images = {};
 function loadSprite(key) {
     const img = new Image(); img.crossOrigin = 'anonymous';
-    img.onload = () => { images[key] = removeBackground(img) || img; updateLog(`Loaded sprite: ${key}`); };
+    img.onload = () => { images[key] = img; updateLog(`Loaded sprite: ${key}`); };   // images are already transparent — no processing
     img.onerror = () => console.warn(`No image for "${key}" (images/${key}.png) — using a drawn placeholder.`);
     img.src = `images/${key}.png`;
 }
-function removeBackground(img) {
-    try {
-        const w = img.naturalWidth, h = img.naturalHeight;
-        const c = document.createElement('canvas'); c.width = w; c.height = h;
-        const cx = c.getContext('2d', { willReadFrequently: true }); cx.drawImage(img, 0, 0);
-        const d = cx.getImageData(0, 0, w, h); const px = d.data;
-        if (px[3] === 0) return img;
-        const br = px[0], bg = px[1], bb = px[2], tol = 42;
-        const visited = new Uint8Array(w * h), stack = [];
-        const match = (i) => { const o = i * 4; return px[o + 3] > 10 && Math.abs(px[o] - br) <= tol && Math.abs(px[o + 1] - bg) <= tol && Math.abs(px[o + 2] - bb) <= tol; };
-        for (let x = 0; x < w; x++) { stack.push(x); stack.push((h - 1) * w + x); }
-        for (let y = 0; y < h; y++) { stack.push(y * w); stack.push(y * w + w - 1); }
-        while (stack.length) { const i = stack.pop(); if (i < 0 || i >= w * h || visited[i]) continue; visited[i] = 1; if (!match(i)) continue; px[i * 4 + 3] = 0; const x = i % w, y = (i / w) | 0; if (x > 0) stack.push(i - 1); if (x < w - 1) stack.push(i + 1); if (y > 0) stack.push(i - w); if (y < h - 1) stack.push(i + w); }
-        cx.putImageData(d, 0, 0); return c;
-    } catch (e) { console.warn('Background removal skipped.', e); return img; }
-}
 function imgReady(key) { const i = images[key]; return !!i && ((i.width || i.naturalWidth) > 0); }
 SPRITE_KEYS.forEach(loadSprite);
+
+// ---- Image variations system ----
+// Folders hold numbered variations (Wheat1.png, Wheat2.png, …). We probe upward until a 404,
+// collecting every variation found. Each placed object stores a random "vseed" to pick one consistently.
+const variations = { wheat: [], well: [], sign: [], cave: [], shrine: [] };
+function loadVariations(cat, path, prefix, max = 40) {
+    variations[cat] = [];
+    const alt = prefix.charAt(0) === prefix.charAt(0).toUpperCase()
+        ? prefix.charAt(0).toLowerCase() + prefix.slice(1)
+        : prefix.charAt(0).toUpperCase() + prefix.slice(1);
+    let usePrefix = prefix, i = 1, triedAlt = false;
+    const tryNext = () => {
+        const img = new Image(); img.crossOrigin = 'anonymous';
+        img.onload = () => { variations[cat].push(img); i++; if (i <= max) tryNext(); };
+        img.onerror = () => {
+            if (i === 1 && !triedAlt) { triedAlt = true; usePrefix = alt; tryNext(); return; }   // try the other casing for #1
+            if (variations[cat].length) updateLog(`Loaded ${variations[cat].length} ${cat} variation(s).`);
+        };
+        img.src = `${path}/${usePrefix}${i}.png`;
+    };
+    tryNext();
+}
+function loadFixedImage(cat, src) {
+    const img = new Image(); img.crossOrigin = 'anonymous';
+    img.onload = () => { variations[cat] = [img]; updateLog(`Loaded ${cat} image.`); };
+    img.onerror = () => console.warn(`No image at ${src}`);
+    img.src = src;
+}
+function variantImg(cat, seed) { const a = variations[cat]; if (!a || !a.length) return null; return a[Math.floor((seed || 0) * a.length) % a.length]; }
+function loadAllVariations() {
+    loadVariations('wheat', 'images/wheat', 'Wheat');
+    loadVariations('well', 'images/well', 'Well');
+    loadVariations('sign', 'images/sign', 'Sign');
+    loadVariations('cave', 'images/cave', 'Cave');
+    loadFixedImage('shrine', 'images/shrines/ShrineOfAsh.png');   // only the Shrine of Ash for now
+}
 
 // ===========================================================
 //  HUD VITALS
@@ -205,7 +225,7 @@ function canPlaceHut(x, y) { if (isWater(x, y, 15)) return false; const cx = x +
 function nearestHutCenter(x, y) { let best = null, bd = Infinity; for (const h of world.huts) { const c = { x: h.x + 25, y: h.y + 25 }; const d = Math.hypot(c.x - x, c.y - y); if (d < bd) { bd = d; best = c; } } return best; }
 
 function generateWorld() {
-    world = { lakes: [], rivers: [], huts: [], villagers: [], shrines: [], trees: [], crops: [], fireballs: [], goblins: [], goblinGroups: [], ashes: [], villages: [] };
+    world = { lakes: [], rivers: [], huts: [], villagers: [], shrines: [], trees: [], crops: [], fireballs: [], goblins: [], goblinGroups: [], ashes: [], villages: [], wells: [], signs: [], caves: [] };
     for (let i = 0; i < 4; i++) world.lakes.push({ x: 200 + Math.random() * (WORLD_W - 400), y: 200 + Math.random() * (WORLD_H - 400), rx: 70 + Math.random() * 120, ry: 55 + Math.random() * 100 });
     for (let r = 0; r < 2; r++) { const points = []; const horizontal = Math.random() < 0.5; let x = horizontal ? 0 : Math.random() * WORLD_W, y = horizontal ? Math.random() * WORLD_H : 0, angle = horizontal ? 0 : Math.PI / 2; while (x >= -50 && x <= WORLD_W + 50 && y >= -50 && y <= WORLD_H + 50) { points.push({ x, y }); angle += (Math.random() - 0.5) * 0.7; x += Math.cos(angle) * 60; y += Math.sin(angle) * 60; if (points.length > 120) break; } world.rivers.push({ points, width: 22 + Math.random() * 14 }); }
     for (let i = 0; i < 55; i++) world.trees.push(findLandSpot(40, 18));
@@ -223,11 +243,12 @@ function generateWorld() {
         world.villagers.push({ x: spot.x, y: spot.y, home: { x: vc.x, y: vc.y }, village: vi, heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0 });
     }
     world.shrines.push(findLandSpot(150, 60));
+    for (let i = 0; i < 6; i++) { const c = findLandSpot(120, 50); world.caves.push({ x: c.x, y: c.y, vseed: Math.random() }); }   // caves at random
     for (let g = 0; g < 3; g++) { const c = findLandSpot(120, 40); world.goblinGroups.push({ x: c.x, y: c.y, heading: Math.random() * Math.PI * 2, turnTimer: 120 + Math.random() * 240 }); const n = 2 + Math.floor(Math.random() * 2); for (let i = 0; i < n; i++) world.goblins.push({ x: c.x + (Math.random() * 40 - 20), y: c.y + (Math.random() * 40 - 20), group: g, ox: Math.random() * 30 - 15, oy: Math.random() * 30 - 15 }); }
     updateLog("Generated a fresh world: rivers, lakes, huts, villagers & goblin packs.");
 }
 function normalizeWorld() {
-    ['lakes', 'rivers', 'huts', 'villagers', 'shrines', 'trees', 'crops', 'fireballs', 'goblins', 'goblinGroups', 'ashes', 'villages'].forEach(k => { if (!Array.isArray(world[k])) world[k] = []; });
+    ['lakes', 'rivers', 'huts', 'villagers', 'shrines', 'trees', 'crops', 'fireballs', 'goblins', 'goblinGroups', 'ashes', 'villages', 'wells', 'signs', 'caves'].forEach(k => { if (!Array.isArray(world[k])) world[k] = []; });
     world.villagers.forEach(v => {
         if (!v.home) { v.home = nearestHutCenter(v.x, v.y) || { x: v.x, y: v.y }; }
         if (v.vstate === undefined) { v.vstate = 'moving'; v.vUntil = 0; v.heading = Math.random() * 6.283; }
@@ -236,6 +257,12 @@ function normalizeWorld() {
             let bi = 0, bd = Infinity; world.villages.forEach((vc, i) => { const d = Math.hypot(vc.x - v.home.x, vc.y - v.home.y); if (d < bd) { bd = d; bi = i; } }); v.village = bi;
         }
     });
+    // give variation objects a stable seed (covers saves made before the image-variations system)
+    world.crops.forEach(c => { if (c.vseed === undefined) c.vseed = Math.random(); });
+    world.wells.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); });
+    world.signs.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); });
+    world.caves.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); });
+    if (!world.caves.length) for (let i = 0; i < 6; i++) { const c = findLandSpot(120, 50); world.caves.push({ x: c.x, y: c.y, vseed: Math.random() }); }
 }
 
 // ===========================================================
@@ -432,7 +459,7 @@ function updateVillagers(dt, now) {
         if (Math.random() < 0.0011) {            // slowly add the next crop to the village's shared field
             const center = (world.villages && world.villages[v.village]) || v.home;
             const cell = nextCropCell(center);
-            if (cell) world.crops.push({ x: cell.x, y: cell.y });
+            if (cell) world.crops.push({ x: cell.x, y: cell.y, vseed: Math.random() });
         }
     }
 }
@@ -459,6 +486,25 @@ function updateProjectiles() { for (let i = world.fireballs.length - 1; i >= 0; 
 function updateAshes() { const now = Date.now(); for (let i = world.ashes.length - 1; i >= 0; i--) if (now - world.ashes[i].born > ASH_LIFETIME_MS) world.ashes.splice(i, 1); }
 function maybeSpawnShrine() { if (world.shrines.length >= 8) return; if (Math.random() < 0.0006) { world.shrines.push(findLandSpot(80, 40)); updateLog("A shrine has appeared."); } }
 
+const CITY_HUT_COUNT = 7, CITY_RADIUS_PX = m2px(100);
+// When 7+ huts sit within 100 m, drop a single well (the city center) + a sign nearby.
+function maybeSpawnWell() {
+    if (world.huts.length < CITY_HUT_COUNT) return;
+    for (const h of world.huts) {
+        let sx = 0, sy = 0, n = 0;
+        for (const o of world.huts) { if (Math.hypot(o.x - h.x, o.y - h.y) <= CITY_RADIUS_PX) { sx += o.x + 25; sy += o.y + 25; n++; } }
+        if (n >= CITY_HUT_COUNT) {
+            const cx = sx / n, cy = sy / n;
+            if (world.wells.some(w => Math.hypot(w.x - cx, w.y - cy) < CITY_RADIUS_PX)) return;   // already has a city well
+            world.wells.push({ x: cx, y: cy, vseed: Math.random(), cityCenter: true });
+            const ang = Math.random() * Math.PI * 2, d = 40 + Math.random() * 25;
+            world.signs.push({ x: cx + Math.cos(ang) * d, y: cy + Math.sin(ang) * d, vseed: Math.random() });
+            updateLog("A city has formed — a well (city center) and a sign appeared.");
+            return;
+        }
+    }
+}
+
 function nearestIn(arr, fx, fy, maxPx) { let best = null, bd = maxPx; for (const o of arr) { const d = Math.hypot(o.x - fx, o.y - fy); if (d < bd) { bd = d; best = { obj: o, dist: d }; } } return best; }
 function stepToward(o, tx, ty, speed) { const dx = tx - o.x, dy = ty - o.y, d = Math.hypot(dx, dy) || 1; o.x += (dx / d) * speed; o.y += (dy / d) * speed; }
 function stepCreatureToward(tx, ty, sp) { const cx = creature.x + 30, cy = creature.y + 33, dx = tx - cx, dy = ty - cy, d = Math.hypot(dx, dy) || 1; creature.x = clamp(creature.x + (dx / d) * sp, 0, WORLD_W - 60); creature.y = clamp(creature.y + (dy / d) * sp, 0, WORLD_H - 66); }
@@ -480,6 +526,17 @@ function updateGoblins(dt) {
         else if (h) { stepToward(gob, h.obj.x + 25, h.obj.y + 25, charge); if (Math.hypot(gob.x - (h.obj.x + 25), gob.y - (h.obj.y + 25)) < GOBLIN_CONTACT_PX) { const i = world.huts.indexOf(h.obj); if (i >= 0) { world.huts.splice(i, 1); world.ashes.push(makeAshes(h.obj.x + 25, h.obj.y + 25)); } } }
         else { const a = world.goblinGroups[gob.group] || { x: gob.x, y: gob.y }; stepToward(gob, a.x + (gob.ox || 0), a.y + (gob.oy || 0), base); }
         gob.x = clamp(gob.x, 6, WORLD_W - 6); gob.y = clamp(gob.y, 6, WORLD_H - 6);
+    }
+    // Separation: keep goblins from standing on top of one another
+    const MIN_SEP = 16, gs = world.goblins;
+    for (let i = 0; i < gs.length; i++) for (let j = i + 1; j < gs.length; j++) {
+        const a = gs[i], b = gs[j]; let dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+        if (d === 0) { dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); d = Math.hypot(dx, dy) || 1; }
+        if (d < MIN_SEP) {
+            const push = (MIN_SEP - d) / 2, ux = dx / d, uy = dy / d;
+            a.x = clamp(a.x - ux * push, 6, WORLD_W - 6); a.y = clamp(a.y - uy * push, 6, WORLD_H - 6);
+            b.x = clamp(b.x + ux * push, 6, WORLD_W - 6); b.y = clamp(b.y + uy * push, 6, WORLD_H - 6);
+        }
     }
 }
 
@@ -645,8 +702,11 @@ function doVillagerInteraction(v) {
 function drawTree(t) { if (imgReady('tree')) { ctx.drawImage(images.tree, t.x, t.y, 35, 45); return; } ctx.fillStyle = '#6b4226'; ctx.fillRect(t.x + 14, t.y + 28, 7, 17); ctx.fillStyle = '#2e6b2e'; ctx.beginPath(); ctx.moveTo(t.x + 17, t.y); ctx.lineTo(t.x + 34, t.y + 32); ctx.lineTo(t.x, t.y + 32); ctx.closePath(); ctx.fill(); }
 function drawHut(h) { if (imgReady('hut')) { ctx.drawImage(images.hut, h.x, h.y, 50, 50); return; } ctx.fillStyle = '#caa472'; ctx.fillRect(h.x + 6, h.y + 22, 38, 28); ctx.fillStyle = '#8a3b2a'; ctx.beginPath(); ctx.moveTo(h.x + 25, h.y); ctx.lineTo(h.x + 50, h.y + 24); ctx.lineTo(h.x, h.y + 24); ctx.closePath(); ctx.fill(); ctx.fillStyle = '#5a3a22'; ctx.fillRect(h.x + 20, h.y + 34, 11, 16); }
 function drawVillager(v) { if (imgReady('villager')) { ctx.drawImage(images.villager, v.x, v.y, 16, 24); return; } ctx.fillStyle = '#f1c27d'; ctx.beginPath(); ctx.arc(v.x + 8, v.y + 5, 5, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#3b6fb0'; ctx.fillRect(v.x + 3, v.y + 10, 10, 14); }
-function drawCrop(c) { if (imgReady('crop')) { ctx.drawImage(images.crop, c.x, c.y, 20, 20); return; } ctx.strokeStyle = '#d8b13a'; ctx.lineWidth = 2; for (let i = -1; i <= 1; i++) { ctx.beginPath(); ctx.moveTo(c.x + 10 + i * 5, c.y + 18); ctx.lineTo(c.x + 10 + i * 5, c.y + 6); ctx.stroke(); } }
-function drawShrine(s) { if (imgReady('shrine')) { ctx.drawImage(images.shrine, s.x - 4, s.y - 8, 38, 44); return; } ctx.fillStyle = '#FFD700'; ctx.fillRect(s.x, s.y, 30, 30); }
+function drawWheat(c) { const img = variantImg('wheat', c.vseed); if (img) { ctx.drawImage(img, c.x - 12, c.y - 12, 24, 24); return; } ctx.strokeStyle = '#d8b13a'; ctx.lineWidth = 2; for (let i = -1; i <= 1; i++) { ctx.beginPath(); ctx.moveTo(c.x + i * 5, c.y + 8); ctx.lineTo(c.x + i * 5, c.y - 6); ctx.stroke(); } }
+function drawShrine(s) { const img = variantImg('shrine', 0); if (img) { ctx.drawImage(img, s.x - 6, s.y - 12, 44, 50); return; } ctx.fillStyle = '#FFD700'; ctx.fillRect(s.x, s.y, 30, 30); }
+function drawWell(w) { const img = variantImg('well', w.vseed); if (img) { ctx.drawImage(img, w.x - 22, w.y - 26, 44, 48); return; } ctx.fillStyle = '#777'; ctx.beginPath(); ctx.arc(w.x, w.y, 16, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#2b5b86'; ctx.beginPath(); ctx.arc(w.x, w.y, 9, 0, Math.PI * 2); ctx.fill(); }
+function drawSign(s) { const img = variantImg('sign', s.vseed); if (img) { ctx.drawImage(img, s.x - 14, s.y - 24, 28, 30); return; } ctx.fillStyle = '#6b4226'; ctx.fillRect(s.x - 2, s.y - 8, 4, 16); ctx.fillStyle = '#caa472'; ctx.fillRect(s.x - 12, s.y - 22, 24, 14); }
+function drawCave(c) { const img = variantImg('cave', c.vseed); if (img) { ctx.drawImage(img, c.x - 28, c.y - 30, 56, 56); return; } ctx.fillStyle = '#5a5560'; ctx.beginPath(); ctx.arc(c.x, c.y, 26, Math.PI, 0); ctx.fill(); ctx.fillStyle = '#15131a'; ctx.beginPath(); ctx.arc(c.x, c.y, 14, Math.PI, 0); ctx.fill(); }
 function drawGoblin(g) { if (imgReady('goblin')) { ctx.drawImage(images.goblin, g.x - 8, g.y - 11, 16, 22); return; } ctx.fillStyle = '#5a7d3a'; ctx.beginPath(); ctx.arc(g.x, g.y - 4, 4, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#3f5a28'; ctx.fillRect(g.x - 4, g.y, 8, 10); }
 function drawFireball(f) { if (imgReady('fireball')) { ctx.drawImage(images.fireball, f.x - 12, f.y - 12, 25, 25); return; } const g = ctx.createRadialGradient(f.x, f.y, 2, f.x, f.y, 13); g.addColorStop(0, '#fff3b0'); g.addColorStop(0.5, '#ff8c1a'); g.addColorStop(1, 'rgba(200,40,0,0.1)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(f.x, f.y, 13, 0, Math.PI * 2); ctx.fill(); }
 function drawAshes(a) { const age = Date.now() - a.born; const alpha = age > (ASH_LIFETIME_MS - ASH_FADE_MS) ? Math.max(0, (ASH_LIFETIME_MS - age) / ASH_FADE_MS) : 1; ctx.globalAlpha = alpha; if (imgReady('ashes')) ctx.drawImage(images.ashes, a.x - 12, a.y - 8, 26, 18); else { ctx.fillStyle = '#3b3b3b'; ctx.beginPath(); ctx.ellipse(a.x, a.y, 12, 6, 0, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#666'; (a.specks || []).forEach(s => ctx.fillRect(a.x + s.dx, a.y + s.dy, 2, 2)); } ctx.globalAlpha = 1; }
@@ -661,11 +721,14 @@ function renderScene() {
     ctx.fillStyle = grassPattern || '#4f8f43'; ctx.fillRect(camera.x, camera.y, vw, vh);
     ctx.strokeStyle = '#2c5a26'; ctx.lineWidth = 6; ctx.strokeRect(0, 0, WORLD_W, WORLD_H);
     if (waterCanvas) { const sw = Math.min(vw, WORLD_W - camera.x), sh = Math.min(vh, WORLD_H - camera.y); if (sw > 0 && sh > 0) ctx.drawImage(waterCanvas, camera.x, camera.y, sw, sh, camera.x, camera.y, sw, sh); }
+    world.caves.forEach(c => { if (visible(c.x, c.y)) drawCave(c); });
     world.ashes.forEach(a => { if (visible(a.x, a.y)) drawAshes(a); });
     world.shrines.forEach(s => { if (visible(s.x, s.y)) drawShrine(s); });
+    world.crops.forEach(c => { if (visible(c.x, c.y)) drawWheat(c); });
     world.huts.forEach(h => { if (visible(h.x, h.y)) drawHut(h); });
+    world.wells.forEach(w => { if (visible(w.x, w.y)) drawWell(w); });
+    world.signs.forEach(s => { if (visible(s.x, s.y)) drawSign(s); });
     world.trees.forEach(t => { if (visible(t.x, t.y)) drawTree(t); });
-    world.crops.forEach(c => { if (visible(c.x, c.y)) drawCrop(c); });
     world.villagers.forEach(v => { if (visible(v.x, v.y)) drawVillager(v); });
     world.goblins.forEach(g => { if (visible(g.x, g.y)) drawGoblin(g); });
     world.fireballs.forEach(f => drawFireball(f));
@@ -688,8 +751,10 @@ function draw(ts) {
     updateAshes();
     updateStamina(dt);
     maybeSpawnShrine();
+    if ((frameCount = (frameCount + 1) % 60) === 0) maybeSpawnWell();   // check for new cities ~1x/sec
     requestAnimationFrame(draw);
 }
+let frameCount = 0;
 
 // ===========================================================
 //  GEMINI (commands)
@@ -1021,6 +1086,7 @@ loadGame();
 buildWaterLayer();
 loadCreatureVoice();
 loadCanned();
+loadAllVariations();
 renderHearts(creature.hearts);
 renderStamina(creature.stamina);
 canvas.style.cursor = 'grab';
