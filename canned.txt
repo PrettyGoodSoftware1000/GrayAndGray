@@ -60,6 +60,15 @@ protect the town
 guard
 protect the village
 protect
+guard a village
+guard village
+protect a village
+save village
+save the village
+guard villagers
+guard the villagers
+guard village
+
 
 [stop]
 stop
