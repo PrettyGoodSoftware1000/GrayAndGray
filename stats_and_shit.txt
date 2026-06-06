@@ -10,7 +10,7 @@
 # Spells (fireball): speed = projectile px/frame, damage = hearts at FULL charge.
 
 [creature]
-hearts = 3
+hearts = 6
 attack_speed = 1.2
 attack_damage = 2
 move_speed = 2.0
