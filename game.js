@@ -12,7 +12,7 @@
    =========================================================== */
 
 const VERSION = "egg-v2.2";          // save-schema version (only bump when world data changes)
-const GAME_VERSION = "2.6";          // displayed build version — bump on every update
+const GAME_VERSION = "2.7";          // displayed build version — bump on every update
 
 const PIXELS_PER_METER = 10;
 const m2px = (m) => m * PIXELS_PER_METER;
@@ -36,6 +36,14 @@ const BURN_APPROACH_PX = m2px(11);       // creature walks up to ~11 m, then thr
 const GOBLIN_DETECT_PX = m2px(40);
 const GOBLIN_SPEED_MPS = 2.4;
 const GOBLIN_CONTACT_PX = 18;
+// --- combat / hearts (v2.7) ---
+const CREATURE_MAX_HEARTS = 3;
+const VILLAGER_HEARTS = 1, GOBLIN_HEARTS = 2, OGRE_HEARTS = 5;
+const ATTACK_RANGE_PX = m2px(5), CREATURE_ATTACK_DMG = 2;
+const GOBLIN_AGGRO_PX = m2px(50), GOBLIN_HIT_DMG = 0.5;
+const OGRE_AGGRO_PX = m2px(30), OGRE_ATTACK_DMG = 2, OGRE_CONTACT_PX = 24, OGRE_HEARTS_MAX = 5;
+const GOBLINHUT_MIN_VILLAGE_PX = m2px(300);
+const FIRE_BASE_DMG = 4;
 const GOBLIN_CHAIN_RANGE_PX = m2px(50);   // chain a burn-spree to the next target within 50 m
 const CROP_SPACING = 25;                  // grid spacing for villager crop fields (2.5 m)
 const GUARD_ENEMY_RANGE_PX = m2px(40);
@@ -121,18 +129,33 @@ canvas.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 let mouseSX = window.innerWidth / 2, mouseSY = window.innerHeight / 2;   // latest mouse screen position
+function screenToWorld(sx, sy) { return { x: camera.x + sx / zoom, y: camera.y + sy / zoom }; }
+function livingUnderCursor(wx, wy) {
+    let best = null, bd = 22;
+    for (const v of world.villagers) { const d = Math.hypot(v.x + 8 - wx, v.y + 12 - wy); if (d < bd) { bd = d; best = v; } }
+    for (const g of world.goblins) { const d = Math.hypot(g.x - wx, g.y - wy); if (d < bd) { bd = d; best = g; } }
+    for (const o of world.ogres) { const d = Math.hypot(o.x - wx, o.y - wy); if (d < bd) { bd = d; best = o; } }
+    return best;
+}
 canvas.addEventListener('mousedown', (e) => {
     if (e.button === 2) {                                  // right-click: charge the selected spell (fireball)
         if (!isPaused && selectedSpell === 0) { e.preventDefault(); startCharge(); }
         return;
     }
     if (e.button !== 0) return;
-    dragging = true; dragLastX = e.clientX; dragLastY = e.clientY;
-    canvas.style.cursor = 'grabbing'; e.preventDefault();
+    if (e.ctrlKey || e.metaKey) {                          // Ctrl/Cmd + drag pans the map
+        dragging = true; dragLastX = e.clientX; dragLastY = e.clientY; canvas.style.cursor = 'grabbing'; e.preventDefault(); return;
+    }
+    if (!isPaused && !creature.dead) {                     // plain left-click sends the creature there
+        const w = screenToWorld(e.clientX, e.clientY);
+        creature.goto = { x: w.x, y: w.y }; creature.act = 'goto'; statusBox.innerText = 'Walking over there.';
+    }
 });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());   // no browser menu on right-click
 window.addEventListener('mousemove', (e) => {
     mouseSX = e.clientX; mouseSY = e.clientY;
+    const w = screenToWorld(e.clientX, e.clientY);
+    hoveredEntity = livingUnderCursor(w.x, w.y);
     if (!dragging) return;
     camera.x -= (e.clientX - dragLastX) / zoom;
     camera.y -= (e.clientY - dragLastY) / zoom;
@@ -141,13 +164,13 @@ window.addEventListener('mousemove', (e) => {
 });
 window.addEventListener('mouseup', (e) => {
     if (e.button === 2) { if (charging) releaseCharge(); return; }
-    if (dragging) { dragging = false; canvas.style.cursor = 'grab'; }
+    if (dragging) { dragging = false; canvas.style.cursor = 'default'; }
 });
 
 // ===========================================================
 //  SPRITES
 // ===========================================================
-const SPRITE_KEYS = ['tree', 'hut', 'villager', 'fireball', 'goblin', 'ashes'];
+const SPRITE_KEYS = ['tree', 'hut', 'villager', 'fireball', 'goblin', 'ogre', 'ashes'];
 const images = {};
 function loadSprite(key) {
     const img = new Image(); img.crossOrigin = 'anonymous';
@@ -161,7 +184,7 @@ SPRITE_KEYS.forEach(loadSprite);
 // ---- Image variations system ----
 // Folders hold numbered variations (Wheat1.png, Wheat2.png, …). We probe upward until a 404,
 // collecting every variation found. Each placed object stores a random "vseed" to pick one consistently.
-const variations = { wheat: [], well: [], sign: [], cave: [], shrine: [] };
+const variations = { wheat: [], well: [], sign: [], cave: [], shrine: [], goblin_hut: [] };
 function loadVariations(cat, path, prefix, max = 40) {
     variations[cat] = [];
     const alt = prefix.charAt(0) === prefix.charAt(0).toUpperCase()
@@ -192,15 +215,17 @@ function loadAllVariations() {
     loadVariations('sign', 'images/sign', 'Sign');
     loadVariations('cave', 'images/cave', 'Cave');
     loadFixedImage('shrine', 'images/shrines/ShrineOfAsh.png');   // only the Shrine of Ash for now
+    loadVariations('goblin_hut', 'images/goblin_buildings', 'goblin_hut');
 }
 
 // Creature image lives in images/creature/ named creature_<type>_<personality>.png.
 // We probe combinations; the first that loads sets the sprite AND the creature's voice.
 const CREATURE_TYPES = ['lion', 'lizard', 'tiger', 'wolf', 'bear', 'dragon', 'goat', 'owl', 'cat', 'fox'];
 const CREATURE_PERSONALITIES = ['adhd', 'snarky', 'nice', 'mean', 'wise', 'grumpy', 'cheerful', 'shy'];
-function loadCreatureImage() {
+function loadCreatureImage(shuffle) {
     const combos = [];
     for (const t of CREATURE_TYPES) for (const p of CREATURE_PERSONALITIES) combos.push([t, p]);
+    if (shuffle) for (let i = combos.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[combos[i], combos[j]] = [combos[j], combos[i]]; }
     let idx = 0;
     const tryNext = () => {
         if (idx >= combos.length) { updateLog('No creature image in images/creature/ — using a placeholder. Voice: ' + activeVoice + '.'); return; }
@@ -211,6 +236,12 @@ function loadCreatureImage() {
         img.src = `images/creature/creature_${t}_${p}.png`;
     };
     tryNext();
+}
+// "change creature" — pick a random available creature image and match the voice to its personality
+function changeCreature() {
+    activeVoice = 'adhd';                 // default if nothing matches
+    narratorSays('The creature takes a new form.');
+    loadCreatureImage(true);              // random order -> a different creature each time
 }
 
 // ===========================================================
@@ -227,7 +258,21 @@ function heartSVG(state) {
     if (state !== 'empty') cells += '<rect x="1" y="1" width="1" height="1" fill="#ffd0d0"/>';
     return `<svg width="26" height="23" viewBox="0 0 8 7">${cells}</svg>`;
 }
-function renderHearts(full, total = 3) { let html = ''; for (let i = 0; i < total; i++) html += heartSVG(i < full ? 'full' : 'empty'); heartsEl.innerHTML = html; }
+function renderHearts(hearts, total = 3) { let html = ''; for (let i = 0; i < total; i++) { const state = hearts >= i + 1 ? 'full' : (hearts >= i + 0.5 ? 'half' : 'empty'); html += heartSVG(state); } heartsEl.innerHTML = html; }
+// Draw mini pixel-hearts on the canvas above an entity (red = current, black = lost)
+function drawMiniHearts(cx, topY, current, max) {
+    const cell = 1.4, hw = 8 * cell, gap = 2, totalW = max * hw + (max - 1) * gap;
+    let x0 = cx - totalW / 2;
+    for (let h = 0; h < max; h++) {
+        const state = current >= h + 1 ? 'full' : (current >= h + 0.5 ? 'half' : 'empty');
+        const bx = x0 + h * (hw + gap);
+        for (let y = 0; y < HEART.length; y++) for (let xx = 0; xx < 8; xx++) {
+            if (!HEART[y][xx]) continue;
+            ctx.fillStyle = (state === 'empty' || (state === 'half' && xx >= 4)) ? '#1a1a1a' : '#f22e2e';
+            ctx.fillRect(bx + xx * cell, topY + y * cell, cell, cell);
+        }
+    }
+}
 function renderStamina(s) { let html = ''; for (let i = 0; i < 5; i++) { const cls = s >= i * 2 + 2 ? 'full' : (s === i * 2 + 1 ? 'half' : ''); html += `<div class="stamina-dot ${cls}"></div>`; } staminaEl.innerHTML = html; }
 
 // ===========================================================
@@ -245,12 +290,13 @@ function buildGrassPattern() {
 // ===========================================================
 //  WORLD
 // ===========================================================
-let world = { lakes: [], rivers: [], huts: [], villagers: [], shrines: [], trees: [], crops: [], fireballs: [], goblins: [], goblinGroups: [], ashes: [] };
+let world = { lakes: [], rivers: [], huts: [], villagers: [], shrines: [], trees: [], crops: [], fireballs: [], goblins: [], goblinGroups: [], ashes: [], ogres: [], goblinHuts: [], goblinTowns: [] };
 let creature = {
     x: WORLD_W / 2, y: WORLD_H / 2,
     act: 'free', moveState: 'walking', heading: Math.random() * Math.PI * 2, stateUntil: 0,
     interactCooldown: 0, burnGoal: null, burnCampaign: null, guard: null, resumeGuard: false,
-    running: false, stamina: STAMINA_MAX, regenTimer: 0, drainTimer: 0, hearts: 3,
+    running: false, stamina: STAMINA_MAX, regenTimer: 0, drainTimer: 0,
+    hearts: CREATURE_MAX_HEARTS, maxHearts: CREATURE_MAX_HEARTS, dead: false, attackCd: 0, goto: null,
     spellsUnlocked: ['fireball', 'grow', 'spread_huts']
 };
 
@@ -278,29 +324,48 @@ function generateWorld() {
         const vi = world.villages.length ? (i % world.villages.length) : 0;
         const vc = world.villages[vi] || findLandSpot(60, 20);
         let spot = vc; for (let a = 0; a < 12; a++) { const ang = Math.random() * 6.283, r = Math.random() * 120; const p = { x: vc.x + Math.cos(ang) * r, y: vc.y + Math.sin(ang) * r }; if (!isWater(p.x, p.y, 10)) { spot = p; break; } }
-        world.villagers.push({ x: spot.x, y: spot.y, home: { x: vc.x, y: vc.y }, village: vi, heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0 });
+        world.villagers.push({ x: spot.x, y: spot.y, home: { x: vc.x, y: vc.y }, village: vi, heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0, hearts: VILLAGER_HEARTS, maxHearts: VILLAGER_HEARTS });
     }
     world.shrines.push(findLandSpot(150, 60));
     for (let i = 0; i < 6; i++) { const c = findLandSpot(120, 50); world.caves.push({ x: c.x, y: c.y, vseed: Math.random() }); }   // caves at random
-    for (let g = 0; g < 3; g++) { const c = findLandSpot(120, 40); world.goblinGroups.push({ x: c.x, y: c.y, heading: Math.random() * Math.PI * 2, turnTimer: 120 + Math.random() * 240 }); const n = 2 + Math.floor(Math.random() * 2); for (let i = 0; i < n; i++) world.goblins.push({ x: c.x + (Math.random() * 40 - 20), y: c.y + (Math.random() * 40 - 20), group: g, ox: Math.random() * 30 - 15, oy: Math.random() * 30 - 15 }); }
-    updateLog("Generated a fresh world: rivers, lakes, huts, villagers & goblin packs.");
+    for (const cave of world.caves) world.ogres.push({ x: cave.x + 20, y: cave.y, home: { x: cave.x, y: cave.y }, hearts: OGRE_HEARTS, maxHearts: OGRE_HEARTS, mode: 'idle', heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0, attackCd: 0 });   // 1 ogre per cave
+    // existing roaming goblin packs (raiders)
+    for (let g = 0; g < 3; g++) { const c = findLandSpot(120, 40); world.goblinGroups.push({ x: c.x, y: c.y, heading: Math.random() * Math.PI * 2, turnTimer: 120 + Math.random() * 240 }); const n = 2 + Math.floor(Math.random() * 2); for (let i = 0; i < n; i++) world.goblins.push(makeGoblin(c.x + (Math.random() * 40 - 20), c.y + (Math.random() * 40 - 20), 'raid', g)); }
+    // goblin towns: groups of 3-6 huts, at least 300 m from every village
+    for (let t = 0; t < 2; t++) {
+        let center = null;
+        for (let a = 0; a < 60; a++) { const p = findLandSpot(160, 60); if (world.villages.every(v => Math.hypot(v.x - p.x, v.y - p.y) >= GOBLINHUT_MIN_VILLAGE_PX)) { center = p; break; } }
+        if (!center) continue;
+        const ti = world.goblinTowns.length; world.goblinTowns.push({ x: center.x, y: center.y });
+        const huts = 3 + Math.floor(Math.random() * 4);
+        for (let h = 0; h < huts; h++) { for (let a = 0; a < 12; a++) { const hx = center.x + (Math.random() * 200 - 100), hy = center.y + (Math.random() * 200 - 100); if (!isWater(hx, hy, 20)) { world.goblinHuts.push({ x: hx, y: hy, vseed: Math.random(), town: ti, spawnCd: 120 }); break; } } }
+    }
+    updateLog("Generated a fresh world: villages, caves+ogres, goblin towns & raiders.");
+}
+function makeGoblin(x, y, mode, group, home) {
+    return { x, y, mode: mode || 'raid', group: group | 0, home: home || null, ox: Math.random() * 30 - 15, oy: Math.random() * 30 - 15, heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0, hearts: GOBLIN_HEARTS, maxHearts: GOBLIN_HEARTS, attackCd: 0 };
 }
 function normalizeWorld() {
-    ['lakes', 'rivers', 'huts', 'villagers', 'shrines', 'trees', 'crops', 'fireballs', 'goblins', 'goblinGroups', 'ashes', 'villages', 'wells', 'signs', 'caves'].forEach(k => { if (!Array.isArray(world[k])) world[k] = []; });
+    ['lakes', 'rivers', 'huts', 'villagers', 'shrines', 'trees', 'crops', 'fireballs', 'goblins', 'goblinGroups', 'ashes', 'villages', 'wells', 'signs', 'caves', 'ogres', 'goblinHuts', 'goblinTowns'].forEach(k => { if (!Array.isArray(world[k])) world[k] = []; });
     world.villagers.forEach(v => {
         if (!v.home) { v.home = nearestHutCenter(v.x, v.y) || { x: v.x, y: v.y }; }
         if (v.vstate === undefined) { v.vstate = 'moving'; v.vUntil = 0; v.heading = Math.random() * 6.283; }
-        if (v.village === undefined || !world.villages[v.village]) {            // attach to nearest village (or make one from home)
+        if (v.hearts === undefined) { v.hearts = VILLAGER_HEARTS; v.maxHearts = VILLAGER_HEARTS; }
+        if (v.village === undefined || !world.villages[v.village]) {
             if (!world.villages.length) world.villages.push({ x: v.home.x, y: v.home.y });
             let bi = 0, bd = Infinity; world.villages.forEach((vc, i) => { const d = Math.hypot(vc.x - v.home.x, vc.y - v.home.y); if (d < bd) { bd = d; bi = i; } }); v.village = bi;
         }
     });
-    // give variation objects a stable seed (covers saves made before the image-variations system)
+    world.goblins.forEach(g => { if (g.hearts === undefined) { g.hearts = GOBLIN_HEARTS; g.maxHearts = GOBLIN_HEARTS; } if (!g.mode) g.mode = 'raid'; if (g.attackCd === undefined) g.attackCd = 0; if (g.vstate === undefined) { g.vstate = 'moving'; g.vUntil = 0; } });
+    world.ogres.forEach(o => { if (o.hearts === undefined) { o.hearts = OGRE_HEARTS; o.maxHearts = OGRE_HEARTS; } if (!o.home) o.home = { x: o.x, y: o.y }; if (!o.mode) o.mode = 'idle'; if (o.attackCd === undefined) o.attackCd = 0; if (o.vstate === undefined) { o.vstate = 'moving'; o.vUntil = 0; } });
     world.crops.forEach(c => { if (c.vseed === undefined) c.vseed = Math.random(); });
     world.wells.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); });
     world.signs.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); });
     world.caves.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); });
+    world.goblinHuts.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); if (o.spawnCd === undefined) o.spawnCd = 120; });
     if (!world.caves.length) for (let i = 0; i < 6; i++) { const c = findLandSpot(120, 50); world.caves.push({ x: c.x, y: c.y, vseed: Math.random() }); }
+    if (!world.ogres.length) for (const cave of world.caves) world.ogres.push({ x: cave.x + 20, y: cave.y, home: { x: cave.x, y: cave.y }, hearts: OGRE_HEARTS, maxHearts: OGRE_HEARTS, mode: 'idle', heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0, attackCd: 0 });
+    if (creature.hearts === undefined) { creature.hearts = CREATURE_MAX_HEARTS; creature.maxHearts = CREATURE_MAX_HEARTS; }
 }
 
 // ===========================================================
@@ -349,10 +414,10 @@ function loadGame() {
 }
 // Reset transient/runtime creature fields (preserves stamina/hearts/position if already set)
 function resetCreatureRuntime() {
-    creature.act = 'free'; creature.burnGoal = null; creature.burnCampaign = null; creature.guard = null; creature.resumeGuard = false;
-    creature.running = false; creature.regenTimer = 0; creature.drainTimer = 0;
+    creature.act = 'free'; creature.burnGoal = null; creature.burnCampaign = null; creature.attackCampaign = null; creature.guard = null; creature.resumeGuard = false; creature.goto = null;
+    creature.running = false; creature.regenTimer = 0; creature.drainTimer = 0; creature.attackCd = 0; creature.dead = false;
+    creature.maxHearts = CREATURE_MAX_HEARTS; creature.hearts = CREATURE_MAX_HEARTS;   // full health on (re)start
     if (creature.stamina === undefined) creature.stamina = STAMINA_MAX;
-    if (creature.hearts === undefined) creature.hearts = 3;
     if (creature.moveState === undefined) creature.moveState = 'walking';
     if (creature.heading === undefined) creature.heading = Math.random() * Math.PI * 2;
     creature.interactCooldown = 0; creature.stateUntil = Date.now() + 4000;
@@ -450,6 +515,7 @@ commandInput.addEventListener('keydown', (e) => {
 
 function handleControl(cmd) {
     if (trySwitchVoice(cmd)) return true;
+    if (/\b(change|swap|new|switch)\s+(the\s+)?creature\b/i.test(cmd)) { changeCreature(); return true; }
     if (/\b(slow down|don'?t rush|stop running|ease up|take it easy|chill out|walk normally|quit running)\b/i.test(cmd)) { stopRunning(); narratorSays('The creature eases back to a walk.'); return true; }
     if (/^\s*(stop|cancel|halt|cease|enough|abort|never\s?mind|quit it|knock it off|stop it)\s*[.!]?\s*$/i.test(cmd)) { cancelAll(); narratorSays('The creature stops what it was doing.'); return true; }
     return false;
@@ -475,7 +541,7 @@ function updateStamina(dt) {
 function startRunning() { if (creature.stamina <= 0) { statusBox.innerText = 'Too tired to run.'; narratorSays('The creature is too winded to run.'); return; } creature.running = true; statusBox.innerText = 'Running!'; }
 function stopRunning() { creature.running = false; }
 function runMult() { return creature.running ? (RUN_SPEED_MPS / WANDER_SPEED_MPS) : 1; }   // wander 2 -> run 8
-function cancelAll() { creature.act = 'free'; creature.burnGoal = null; creature.burnCampaign = null; creature.guard = null; creature.resumeGuard = false; creature.running = false; statusBox.innerText = 'Wandering aimlessly.'; }
+function cancelAll() { creature.act = 'free'; creature.burnGoal = null; creature.burnCampaign = null; creature.attackCampaign = null; creature.guard = null; creature.resumeGuard = false; creature.running = false; creature.goto = null; statusBox.innerText = 'Wandering aimlessly.'; }
 
 // ===========================================================
 //  WORLD UPDATES
@@ -552,10 +618,14 @@ function updateHutGrowth(dt) {
 }
 
 function updateCreature(dt, now) {
+    if (creature.dead) return;
+    creatureAutoAttack(now);                                            // auto-melee any enemy within 5 m
     if (creature.act === 'busy') return;
     if (creature.act === 'seeking') { seekStep(dt); return; }
     if (creature.act === 'burning') { updateBurnCampaign(dt, now); return; }
+    if (creature.act === 'attacking') { updateAttackCampaign(dt, now); return; }
     if (creature.act === 'guarding') { updateGuard(dt, now); return; }
+    if (creature.act === 'goto') { updateGoto(dt); return; }
     if (now > creature.interactCooldown) { const v = nearestIn(world.villagers, creature.x + 30, creature.y + 33, INTERACT_RANGE_PX); if (v) { startVillagerInteraction(v.obj, now); return; } }
     if (creature.moveState === 'stopped') { if (now >= creature.stateUntil) { creature.moveState = 'walking'; creature.stateUntil = now + (3000 + Math.random() * 12000); statusBox.innerText = pickWalkStatus(); } return; }
     if (now >= creature.stateUntil) { enterStopped(now); return; }
@@ -565,7 +635,23 @@ function updateCreature(dt, now) {
     creature.x = nx; creature.y = ny;
 }
 
-function updateProjectiles() { for (let i = world.fireballs.length - 1; i >= 0; i--) { const f = world.fireballs[i]; const dx = f.targetX - f.x, dy = f.targetY - f.y, dist = Math.hypot(dx, dy); const sp = f.speed || 6; if (dist < sp) { if (f.charged) explodeFireball(f.targetX, f.targetY, f.power); world.fireballs.splice(i, 1); } else { f.x += (dx / dist) * sp; f.y += (dy / dist) * sp; } } }
+function fireballHitsObject(fx, fy) {
+    const near = (arr, rad, off) => { for (const o of arr) { const ox = o.x + (off || 0), oy = o.y + (off || 0); if (Math.hypot(ox - fx, oy - fy) < rad) return true; } return false; };
+    if (near(world.goblins, 12) || near(world.ogres, 18)) return true;
+    if (near(world.villagers, 10)) return true;
+    if (near(world.trees, 16)) return true;
+    if (near(world.huts, 28, 25) || near(world.goblinHuts, 28, 25)) return true;
+    if (near(world.caves, 26) || near(world.wells, 22) || near(world.signs, 14) || near(world.shrines, 20) || near(world.crops, 10)) return true;
+    return false;
+}
+function updateProjectiles() {
+    for (let i = world.fireballs.length - 1; i >= 0; i--) {
+        const f = world.fireballs[i]; const dx = f.targetX - f.x, dy = f.targetY - f.y, dist = Math.hypot(dx, dy); const sp = f.speed || 6;
+        if (f.charged && fireballHitsObject(f.x, f.y)) { explodeFireball(f.x, f.y, f.power); world.fireballs.splice(i, 1); continue; }   // explode on contact
+        if (dist < sp) { if (f.charged) explodeFireball(f.targetX, f.targetY, f.power); world.fireballs.splice(i, 1); }
+        else { f.x += (dx / dist) * sp; f.y += (dy / dist) * sp; }
+    }
+}
 function updateAshes() { const now = Date.now(); for (let i = world.ashes.length - 1; i >= 0; i--) if (now - world.ashes[i].born > ASH_LIFETIME_MS) world.ashes.splice(i, 1); }
 function maybeSpawnShrine() { if (world.shrines.length >= 8) return; if (Math.random() < 0.0006) { world.shrines.push(findLandSpot(80, 40)); updateLog("A shrine has appeared."); } }
 
@@ -591,6 +677,121 @@ function nearestIn(arr, fx, fy, maxPx) { let best = null, bd = maxPx; for (const
 function stepToward(o, tx, ty, speed) { const dx = tx - o.x, dy = ty - o.y, d = Math.hypot(dx, dy) || 1; o.x += (dx / d) * speed; o.y += (dy / d) * speed; }
 function stepCreatureToward(tx, ty, sp) { const cx = creature.x + 30, cy = creature.y + 33, dx = tx - cx, dy = ty - cy, d = Math.hypot(dx, dy) || 1; creature.x = clamp(creature.x + (dx / d) * sp, 0, WORLD_W - 60); creature.y = clamp(creature.y + (dy / d) * sp, 0, WORLD_H - 66); }
 
+// ---- Health / combat ----
+function entityCenter(o, arr) { if (arr === world.huts || arr === world.goblinHuts) return { x: o.x + 25, y: o.y + 25 }; return { x: o.x, y: o.y }; }
+function damageEntity(o, arr, dmg) {
+    if (o.hearts === undefined) { o.hearts = 1; o.maxHearts = 1; }
+    o.hearts -= dmg;
+    if (o.hearts <= 0) { const i = arr.indexOf(o); if (i >= 0) { const c = entityCenter(o, arr); arr.splice(i, 1); world.ashes.push(makeAshes(c.x, c.y)); } return true; }
+    return false;
+}
+function damageCreature(dmg) {
+    if (creature.dead) return;
+    creature.hearts = Math.max(0, creature.hearts - dmg);
+    renderHearts(creature.hearts, creature.maxHearts || CREATURE_MAX_HEARTS);
+    if (creature.hearts <= 0) creatureDies();
+}
+function creatureDies() {
+    creature.dead = true; creature.act = 'free'; creature.burnCampaign = null; creature.attackCampaign = null; creature.guard = null; creature.goto = null; creature.running = false;
+    statusBox.innerText = '💀 The creature has died.';
+    narratorSays('The creature has fallen. (Use New Game or Regenerate to begin again.)');
+}
+function nearestEnemy(fx, fy, maxPx) {
+    let best = null, bd = maxPx;
+    for (const g of world.goblins) { const d = Math.hypot(g.x - fx, g.y - fy); if (d < bd) { bd = d; best = { obj: g, arr: world.goblins, dist: d }; } }
+    for (const o of world.ogres) { const d = Math.hypot(o.x - fx, o.y - fy); if (d < bd) { bd = d; best = { obj: o, arr: world.ogres, dist: d }; } }
+    return best;
+}
+// Creature auto-attacks any enemy within 5 m (runs regardless of current action)
+function creatureAutoAttack(now) {
+    if (creature.dead) return;
+    if (now < (creature.attackCd || 0)) return;
+    const e = nearestEnemy(creature.x + 30, creature.y + 33, ATTACK_RANGE_PX);
+    if (e) { damageEntity(e.obj, e.arr, CREATURE_ATTACK_DMG); creature.attackCd = now + 1000 + Math.random() * 500; statusBox.innerText = 'Strikes an enemy!'; }
+}
+
+// ---- Attack command (melee version of burn) ----
+function nearestEnemyOfType(type, x, y, maxPx) {
+    let best = null, bd = maxPx;
+    const scan = (arr) => { for (const o of arr) { const d = Math.hypot(o.x - x, o.y - y); if (d < bd) { bd = d; best = { obj: o, arr, dist: d }; } } };
+    if (type === 'goblin') scan(world.goblins);
+    else if (type === 'ogre') scan(world.ogres);
+    else { scan(world.goblins); scan(world.ogres); }
+    return best;
+}
+function startAttackCampaign(type, now) {
+    type = (type === 'ogre' || type === 'ogres') ? 'ogre' : (type === 'goblin' || type === 'goblins') ? 'goblin' : 'any';
+    const first = nearestEnemyOfType(type, creature.x + 30, creature.y + 33, Infinity);
+    if (!first) { statusBox.innerText = 'No enemies to attack.'; creature.act = 'free'; return; }
+    creature.attackCampaign = { type, cur: null, arr: null, lastPos: null, nextHit: 0 };
+    creature.act = 'attacking'; statusBox.innerText = 'On the warpath...';
+}
+function endAttackCampaign() { creature.attackCampaign = null; creature.act = 'free'; statusBox.innerText = 'Wandering aimlessly.'; }
+function updateAttackCampaign(dt, now) {
+    const camp = creature.attackCampaign; if (!camp) { creature.act = 'free'; return; }
+    if (!camp.cur || !camp.arr || camp.arr.indexOf(camp.cur) < 0) {
+        const ref = camp.lastPos || { x: creature.x + 30, y: creature.y + 33 };
+        const maxR = camp.lastPos ? GOBLIN_CHAIN_RANGE_PX : Infinity;
+        const next = nearestEnemyOfType(camp.type, ref.x, ref.y, maxR);
+        if (!next) { endAttackCampaign(); return; }
+        camp.cur = next.obj; camp.arr = next.arr;
+    }
+    const o = camp.cur, d = Math.hypot(o.x - (creature.x + 30), o.y - (creature.y + 33));
+    if (d > ATTACK_RANGE_PX) { stepCreatureToward(o.x, o.y, SEEK_SPEED_MPS * PIXELS_PER_METER * dt * runMult()); statusBox.innerText = 'Charging an enemy...'; }
+    else if (now >= camp.nextHit) { statusBox.innerText = 'Attacking!'; const dead = damageEntity(o, camp.arr, CREATURE_ATTACK_DMG); if (dead) { camp.lastPos = { x: o.x, y: o.y }; camp.cur = null; camp.arr = null; } camp.nextHit = now + 1000 + Math.random() * 500; }
+}
+
+// ---- Left-click: send the creature to a point ----
+function updateGoto(dt) {
+    const g = creature.goto; if (!g) { creature.act = 'free'; return; }
+    const d = Math.hypot(g.x - (creature.x + 30), g.y - (creature.y + 33));
+    if (d < 24) { creature.goto = null; creature.act = 'free'; statusBox.innerText = 'Wandering aimlessly.'; return; }
+    stepCreatureToward(g.x, g.y, WANDER_SPEED_MPS * PIXELS_PER_METER * dt * runMult());
+    statusBox.innerText = 'Walking over there.';
+}
+
+// ---- Ogres: idle near cave; charge & attack the creature when provoked ----
+function leashWander(o, dt, now, leashPx, speedMps) {
+    const sp = speedMps * PIXELS_PER_METER * dt;
+    if (o.vstate === 'stopped') { if (now >= o.vUntil) { o.vstate = 'moving'; o.vUntil = now + (1000 + Math.random() * 2000); const dh = Math.hypot(o.x - o.home.x, o.y - o.home.y); o.heading = dh > leashPx * 0.75 ? Math.atan2(o.home.y - o.y, o.home.x - o.x) : Math.random() * 6.283; } return; }
+    if (now >= o.vUntil) { o.vstate = 'stopped'; o.vUntil = now + (1000 + Math.random() * 2000); return; }
+    const nx = o.x + Math.cos(o.heading) * sp, ny = o.y + Math.sin(o.heading) * sp;
+    if (Math.hypot(nx - o.home.x, ny - o.home.y) > leashPx || isWater(nx, ny, 8)) { o.vstate = 'stopped'; o.vUntil = now + 800; o.heading = Math.atan2(o.home.y - o.y, o.home.x - o.x); } else { o.x = nx; o.y = ny; }
+}
+function updateOgres(dt, now) {
+    const cx = creature.x + 30, cy = creature.y + 33;
+    for (const o of world.ogres) {
+        const dToCreature = Math.hypot(o.x - cx, o.y - cy);
+        if (!creature.dead && (o.mode === 'charging' || dToCreature <= OGRE_AGGRO_PX || o.hearts < o.maxHearts)) {
+            o.mode = 'charging';
+            if (dToCreature > OGRE_CONTACT_PX) stepToward(o, cx, cy, m2px(3) * dt);
+            else if (now >= o.attackCd) { damageCreature(OGRE_ATTACK_DMG); o.attackCd = now + 2000; }
+        } else { leashWander(o, dt, now, m2px(20), 1.0); }
+    }
+}
+
+// ---- Goblin huts: spawn home goblins, periodically send raiding parties ----
+let goblinHutTimer = 0, raidTimer = 0, raidNext = 60;
+function updateGoblinHuts(dt) {
+    if (!world.goblinHuts.length) return;
+    goblinHutTimer += dt;
+    if (goblinHutTimer >= 120) {                                  // every 2 min, each hut spawns a home goblin
+        goblinHutTimer = 0;
+        for (const gh of world.goblinHuts) { if (world.goblins.length >= 120) break; world.goblins.push(makeGoblin(gh.x + 25 + (Math.random() * 30 - 15), gh.y + 25 + (Math.random() * 30 - 15), 'home', gh.town, world.goblinTowns[gh.town])); }
+        updateLog("Goblin huts spawned new goblins.");
+    }
+    raidTimer += dt;
+    if (raidTimer >= raidNext) {                                  // every 1-2 min, send a raiding party of 3-5
+        raidTimer = 0; raidNext = 60 + Math.random() * 60;
+        for (let ti = 0; ti < world.goblinTowns.length; ti++) {
+            const homies = world.goblins.filter(g => g.mode === 'home' && g.group === ti);
+            const n = Math.min(homies.length, 3 + Math.floor(Math.random() * 3));
+            for (let i = 0; i < n; i++) { homies[i].mode = 'raid'; homies[i].home = null; }
+            if (n) updateLog("A goblin raiding party set out!");
+        }
+    }
+}
+
 function updateGoblins(dt) {
     const base = GOBLIN_SPEED_MPS * PIXELS_PER_METER * dt, charge = base * 2;
     world.goblinGroups.forEach(g => {
@@ -601,12 +802,21 @@ function updateGoblins(dt) {
         if (nx < 40 || nx > WORLD_W - 40 || ny < 40 || ny > WORLD_H - 40 || isWater(nx, ny, 10)) g.heading += Math.PI * (0.6 + Math.random() * 0.5); else { g.x = nx; g.y = ny; }
         g.x = clamp(g.x, 40, WORLD_W - 40); g.y = clamp(g.y, 40, WORLD_H - 40);
     });
+    const cx = creature.x + 30, cy = creature.y + 33, now = Date.now();
     for (const gob of world.goblins) {
-        const v = nearestIn(world.villagers, gob.x, gob.y, GOBLIN_DETECT_PX);
-        const h = v ? null : nearestIn(world.huts, gob.x, gob.y, GOBLIN_DETECT_PX);
-        if (v) { stepToward(gob, v.obj.x, v.obj.y, charge); if (v.dist < GOBLIN_CONTACT_PX) { const i = world.villagers.indexOf(v.obj); if (i >= 0) world.villagers.splice(i, 1); } }
-        else if (h) { stepToward(gob, h.obj.x + 25, h.obj.y + 25, charge); if (Math.hypot(gob.x - (h.obj.x + 25), gob.y - (h.obj.y + 25)) < GOBLIN_CONTACT_PX) { const i = world.huts.indexOf(h.obj); if (i >= 0) { world.huts.splice(i, 1); world.ashes.push(makeAshes(h.obj.x + 25, h.obj.y + 25)); } } }
-        else { const a = world.goblinGroups[gob.group] || { x: gob.x, y: gob.y }; stepToward(gob, a.x + (gob.ox || 0), a.y + (gob.oy || 0), base); }
+        const dCre = Math.hypot(gob.x - cx, gob.y - cy);
+        if (!creature.dead && dCre <= GOBLIN_AGGRO_PX) {                 // within 50 m: always charge & attack the creature
+            if (dCre > GOBLIN_CONTACT_PX) stepToward(gob, cx, cy, charge);
+            else if (now >= (gob.attackCd || 0)) { if (Math.random() < 0.5) damageCreature(GOBLIN_HIT_DMG); gob.attackCd = now + 3000 + Math.random() * 2000; }
+        } else if (gob.mode === 'home' && gob.home) {                    // home goblins idle near their huts
+            leashWander(gob, dt, now, m2px(20), GOBLIN_SPEED_MPS * 0.6);
+        } else {                                                          // raiders: hunt villagers/huts, else march
+            const v = nearestIn(world.villagers, gob.x, gob.y, GOBLIN_DETECT_PX);
+            const h = v ? null : nearestIn(world.huts, gob.x, gob.y, GOBLIN_DETECT_PX);
+            if (v) { stepToward(gob, v.obj.x, v.obj.y, charge); if (v.dist < GOBLIN_CONTACT_PX) damageEntity(v.obj, world.villagers, 1); }
+            else if (h) { stepToward(gob, h.obj.x + 25, h.obj.y + 25, charge); if (Math.hypot(gob.x - (h.obj.x + 25), gob.y - (h.obj.y + 25)) < GOBLIN_CONTACT_PX) { const i = world.huts.indexOf(h.obj); if (i >= 0) { world.huts.splice(i, 1); world.ashes.push(makeAshes(h.obj.x + 25, h.obj.y + 25)); } } }
+            else { const a = world.goblinGroups[gob.group] || { x: gob.x, y: gob.y }; stepToward(gob, a.x + (gob.ox || 0), a.y + (gob.oy || 0), base); }
+        }
         gob.x = clamp(gob.x, 6, WORLD_W - 6); gob.y = clamp(gob.y, 6, WORLD_H - 6);
     }
     // Separation: keep goblins from standing on top of one another
@@ -799,9 +1009,12 @@ function drawWell(w) { const img = variantImg('well', w.vseed); if (img) { ctx.d
 function drawSign(s) { const img = variantImg('sign', s.vseed); if (img) { ctx.drawImage(img, s.x - 14, s.y - 24, 28, 30); return; } ctx.fillStyle = '#6b4226'; ctx.fillRect(s.x - 2, s.y - 8, 4, 16); ctx.fillStyle = '#caa472'; ctx.fillRect(s.x - 12, s.y - 22, 24, 14); }
 function drawCave(c) { const img = variantImg('cave', c.vseed); if (img) { ctx.drawImage(img, c.x - 28, c.y - 30, 56, 56); return; } ctx.fillStyle = '#5a5560'; ctx.beginPath(); ctx.arc(c.x, c.y, 26, Math.PI, 0); ctx.fill(); ctx.fillStyle = '#15131a'; ctx.beginPath(); ctx.arc(c.x, c.y, 14, Math.PI, 0); ctx.fill(); }
 function drawGoblin(g) { if (imgReady('goblin')) { ctx.drawImage(images.goblin, g.x - 8, g.y - 11, 16, 22); return; } ctx.fillStyle = '#5a7d3a'; ctx.beginPath(); ctx.arc(g.x, g.y - 4, 4, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#3f5a28'; ctx.fillRect(g.x - 4, g.y, 8, 10); }
+function drawOgre(o) { if (imgReady('ogre')) { ctx.drawImage(images.ogre, o.x - 18, o.y - 26, 40, 46); return; } ctx.fillStyle = '#6b6f4a'; ctx.beginPath(); ctx.arc(o.x, o.y - 8, 9, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#4d5136'; ctx.fillRect(o.x - 9, o.y, 18, 22); }
+function drawGoblinHut(h) { const img = variantImg('goblin_hut', h.vseed); if (img) { ctx.drawImage(img, h.x, h.y, 50, 50); return; } ctx.fillStyle = '#3a4a2a'; ctx.fillRect(h.x + 6, h.y + 22, 38, 28); ctx.fillStyle = '#26331c'; ctx.beginPath(); ctx.moveTo(h.x + 25, h.y); ctx.lineTo(h.x + 50, h.y + 24); ctx.lineTo(h.x, h.y + 24); ctx.closePath(); ctx.fill(); }
+let hoveredEntity = null, hoveredMax = 1;
 function drawFireball(f) { if (imgReady('fireball')) { ctx.drawImage(images.fireball, f.x - 12, f.y - 12, 25, 25); return; } const g = ctx.createRadialGradient(f.x, f.y, 2, f.x, f.y, 13); g.addColorStop(0, '#fff3b0'); g.addColorStop(0.5, '#ff8c1a'); g.addColorStop(1, 'rgba(200,40,0,0.1)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(f.x, f.y, 13, 0, Math.PI * 2); ctx.fill(); }
 function drawAshes(a) { const age = Date.now() - a.born; const alpha = age > (ASH_LIFETIME_MS - ASH_FADE_MS) ? Math.max(0, (ASH_LIFETIME_MS - age) / ASH_FADE_MS) : 1; ctx.globalAlpha = alpha; if (imgReady('ashes')) ctx.drawImage(images.ashes, a.x - 12, a.y - 8, 26, 18); else { ctx.fillStyle = '#3b3b3b'; ctx.beginPath(); ctx.ellipse(a.x, a.y, 12, 6, 0, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#666'; (a.specks || []).forEach(s => ctx.fillRect(a.x + s.dx, a.y + s.dy, 2, 2)); } ctx.globalAlpha = 1; }
-function drawCreature() { if (imgReady('creature')) ctx.drawImage(images.creature, creature.x, creature.y, 60, 66); else { ctx.fillStyle = '#e8902a'; ctx.fillRect(creature.x, creature.y, 60, 66); } }
+function drawCreature() { if (creature.dead) ctx.globalAlpha = 0.35; if (imgReady('creature')) ctx.drawImage(images.creature, creature.x, creature.y, 60, 66); else { ctx.fillStyle = '#e8902a'; ctx.fillRect(creature.x, creature.y, 60, 66); } ctx.globalAlpha = 1; }
 function visible(x, y, pad = 80) { const vw = canvas.width / zoom, vh = canvas.height / zoom; return x > camera.x - pad && x < camera.x + vw + pad && y > camera.y - pad && y < camera.y + vh + pad; }
 
 let lastTs = null;
@@ -813,6 +1026,7 @@ function renderScene() {
     ctx.strokeStyle = '#2c5a26'; ctx.lineWidth = 6; ctx.strokeRect(0, 0, WORLD_W, WORLD_H);
     if (waterCanvas) { const sw = Math.min(vw, WORLD_W - camera.x), sh = Math.min(vh, WORLD_H - camera.y); if (sw > 0 && sh > 0) ctx.drawImage(waterCanvas, camera.x, camera.y, sw, sh, camera.x, camera.y, sw, sh); }
     world.caves.forEach(c => { if (visible(c.x, c.y)) drawCave(c); });
+    world.goblinHuts.forEach(h => { if (visible(h.x, h.y)) drawGoblinHut(h); });
     world.ashes.forEach(a => { if (visible(a.x, a.y)) drawAshes(a); });
     world.shrines.forEach(s => { if (visible(s.x, s.y)) drawShrine(s); });
     world.crops.forEach(c => { if (visible(c.x, c.y)) drawWheat(c); });
@@ -821,9 +1035,11 @@ function renderScene() {
     world.signs.forEach(s => { if (visible(s.x, s.y)) drawSign(s); });
     world.trees.forEach(t => { if (visible(t.x, t.y)) drawTree(t); });
     world.villagers.forEach(v => { if (visible(v.x, v.y)) drawVillager(v); });
+    world.ogres.forEach(o => { if (visible(o.x, o.y)) drawOgre(o); });
     world.goblins.forEach(g => { if (visible(g.x, g.y)) drawGoblin(g); });
     world.fireballs.forEach(f => drawFireball(f));
     drawCreature();
+    if (hoveredEntity && hoveredEntity.hearts !== undefined) drawMiniHearts(hoveredEntity.x, hoveredEntity.y - 28, hoveredEntity.hearts, hoveredEntity.maxHearts || hoveredMax);
     ctx.restore();
 }
 function draw(ts) {
@@ -841,6 +1057,8 @@ function draw(ts) {
     updateCreature(dt, now);
     updateProjectiles();
     updateGoblins(dt);
+    updateOgres(dt, now);
+    updateGoblinHuts(dt);
     updateAshes();
     updateStamina(dt);
     updateCharge();
@@ -869,16 +1087,18 @@ You are a fire-throwing tiger. Choose ONE action:
 - "run": move at double speed (uses stamina). Maps: "run","hurry","go faster","move faster","sprint","pick up the pace".
 - "stop_running": stop running but keep doing the rest. Maps: "slow down","don't rush","ease up","walk".
 - "guard": go to the nearest village and patrol it, auto-attacking goblins that come near. Maps: "guard the village","defend the village","protect the town".
+- "attack": walk up to the nearest enemy and melee it. Set "target": "goblin","ogre","any". Maps: "attack a goblin","fight the ogre","kill that goblin".
+- "attack_many": go melee a bunch of enemies one after another. Set "target". Maps: "attack some goblins","attack the goblins","fight the ogres","kill the goblins".
 - "stop": cancel whatever the creature is doing. Maps: "stop","cancel","halt","that's enough","nevermind".
 - "grow": grow more nature.   - "spread_huts": add a hut.   - "speak": only talk.   - "idle": do nothing.
 
 Your "speech" MUST be in your established voice/personality.
 
 Respond ONLY with raw JSON (no fences):
-{"action":"burn|burn_many|run|stop_running|guard|stop|grow|spread_huts|speak|idle","target":"tree|villager|hut|crop|goblin|any|null","speech":"in-character line","shortStatusText":"1-6 words"}`;
+{"action":"burn|burn_many|attack|attack_many|run|stop_running|guard|stop|grow|spread_huts|speak|idle","target":"tree|villager|hut|crop|goblin|ogre|any|null","speech":"in-character line","shortStatusText":"1-6 words"}`;
     try {
         const d = JSON.parse(await callGemini(taskPrompt));
-        applyBurnIntent(d, userMessage);                 // make "burn some X" deterministic
+        refineAction(d, userMessage);                    // make "burn/attack some X" deterministic
         if (d.speech) creatureSays(d.speech, true);
         executeAction(d.action, d.target);
         if (d.shortStatusText && d.action !== 'stop') statusBox.innerText = d.shortStatusText;
@@ -901,6 +1121,7 @@ function executeAction(action, target) {
         case "burn": performBurn(target); break;
         case "burn_many": startBurnCampaign(target || 'any', Date.now(), false); break;
         case "burn_goblins": startBurnCampaign('goblin', Date.now(), false); break;  // legacy alias
+        case "attack": case "attack_many": startAttackCampaign(target || 'any', Date.now()); break;
         case "run": startRunning(); break;
         case "stop_running": stopRunning(); break;
         case "guard": startGuard(Date.now()); break;
@@ -938,6 +1159,18 @@ function applyBurnIntent(d, text) {
     else if (!d.target) d.target = 'any';
     return d;
 }
+// Deterministic attack parsing (melee version of burn).
+function attackIntent(text) {
+    const t = (text || '').toLowerCase();
+    if (!/\b(attack|fight|kill|smash|maul|claw|bash|slay|beat up|punch)\b/.test(t)) return null;
+    const many = /\b(some|several|a few|a bunch of|bunch|all|every|lots of|many|the\s+\w+s\b|goblins|ogres)\b/.test(t);
+    let type = null;
+    if (/\bogres?\b/.test(t)) type = 'ogre';
+    else if (/\bgoblins?\b/.test(t)) type = 'goblin';
+    return { many, type };
+}
+function applyAttackIntent(d, text) { const ai = attackIntent(text); if (!ai) return false; d.action = ai.many ? 'attack_many' : 'attack'; d.target = ai.type || 'any'; return true; }
+function refineAction(d, text) { if (applyAttackIntent(d, text)) return d; applyBurnIntent(d, text); return d; }
 
 // ---- AI command log: every NON-canned input + the personality + AI response, grouped by action ----
 let aiCommandLog = {};
@@ -954,9 +1187,9 @@ function logAiCommand(input, action, voice, response) {
 
 // Run a canned command (exact match from canned.txt) — NO API CALL
 function runCanned(cmd, headerAction) {
-    let action = headerAction, target = null;
-    const bi = burnIntent(cmd);                       // burn lines derive precise action/target from their text
-    if (bi) { action = bi.many ? 'burn_many' : 'burn'; target = bi.type || 'any'; }
+    const d = { action: headerAction, target: null };
+    refineAction(d, cmd);                             // burn/attack lines derive precise action+target from their text
+    const action = d.action, target = d.target;
     const resp = cannedResponse(activeVoice, action); // personality's canned line for this action, if any
     if (resp) creatureSays(resp);                     // canned speech: red, NO star (no API)
     else narratorSays("The creature obeys.");         // fallback when CreatureVoice.txt has none
@@ -972,7 +1205,7 @@ function processCommand(cmd) {
     if (mem && mem.count >= 3 && mem.action) {           // repeated non-canned command -> skip the API too
         narratorSays("The creature obeys.");
         const act = { action: mem.action, target: mem.target };
-        applyBurnIntent(act, cmd);
+        refineAction(act, cmd);
         executeAction(act.action, act.target);
         mem.count++; mem.lastUsed = Date.now(); saveRerunMemory();
         return;
@@ -1210,12 +1443,16 @@ function castFireball(power) {
 function explodeFireball(x, y, power) {
     showExplosionGif(x, y, power);
     const radius = power * FIRE_MAX_RADIUS_PX;
-    const pools = [world.trees, world.huts, world.villagers, world.crops, world.goblins, world.wells, world.signs, world.shrines];
-    for (const arr of pools) for (let i = arr.length - 1; i >= 0; i--) {
-        const o = arr[i]; const isHut = (arr === world.huts); const ox = o.x + (isHut ? 25 : 0), oy = o.y + (isHut ? 25 : 0);
-        if (Math.hypot(ox - x, oy - y) <= radius) { arr.splice(i, 1); world.ashes.push(makeAshes(ox, oy)); }
+    const dmg = power * FIRE_BASE_DMG;                                  // 4 hearts at full charge, 2 at 50%
+    // living things take heart damage
+    for (const arr of [world.villagers, world.goblins, world.ogres]) for (let i = arr.length - 1; i >= 0; i--) {
+        const o = arr[i]; if (Math.hypot(o.x - x, o.y - y) <= radius) damageEntity(o, arr, dmg);
     }
-    // caves are intentionally NOT in the pools — they survive
+    // non-living objects are destroyed to ash
+    for (const arr of [world.trees, world.huts, world.crops, world.wells, world.signs, world.shrines, world.goblinHuts]) for (let i = arr.length - 1; i >= 0; i--) {
+        const o = arr[i]; const c = entityCenter(o, arr); if (Math.hypot(c.x - x, c.y - y) <= radius) { arr.splice(i, 1); world.ashes.push(makeAshes(c.x, c.y)); }
+    }
+    // caves survive
 }
 function showExplosionGif(worldX, worldY, power) {
     const diaWorld = power * FIRE_MAX_RADIUS_PX * 2;
@@ -1247,7 +1484,7 @@ loadCreatureImage();
 buildSpellBar();
 renderHearts(creature.hearts);
 renderStamina(creature.stamina);
-canvas.style.cursor = 'grab';
+canvas.style.cursor = 'default';
 camera.x = creature.x - (canvas.width / zoom) / 2;
 camera.y = creature.y - (canvas.height / zoom) / 2;
 clampCamera();
