@@ -12,7 +12,7 @@
    =========================================================== */
 
 const VERSION = "egg-v2.2";          // save-schema version (only bump when world data changes)
-const GAME_VERSION = "2.4";          // displayed build version — bump on every update
+const GAME_VERSION = "2.5";          // displayed build version — bump on every update
 
 const PIXELS_PER_METER = 10;
 const m2px = (m) => m * PIXELS_PER_METER;
@@ -71,11 +71,14 @@ const keysSaveBtn = document.getElementById('keys-save-btn');
 const keysCloseBtn = document.getElementById('keys-close-btn');
 const heartsEl = document.getElementById('hearts');
 const staminaEl = document.getElementById('stamina');
+const apiUsageEl = document.getElementById('api-usage');
+const spellBarEl = document.getElementById('spell-bar');
 
 const WORLD_W = 3000, WORLD_H = 2200;
 
 let isPaused = false;
 let apiKeys = [];          // up to many Gemini keys; rotated across requests / on rate limits
+let keyCallCounts = {};    // session: key string -> number of requests sent with it
 let keyIndex = 0;
 const MAX_KEY_FIELDS = 5;  // manual "+" fields cap; file upload may add more
 
@@ -106,29 +109,40 @@ function setZoom(nz, ax, ay) {
     clampCamera(); if (isPaused) drawRuler();
 }
 canvas.addEventListener('wheel', (e) => {
+    if (isPaused) return;                       // no zooming from the pause menu
     e.preventDefault();
     const f = e.deltaY < 0 ? 1.12 : 1 / 1.12;
     setZoom(zoom * f, e.clientX, e.clientY);
 }, { passive: false });
 
+let mouseSX = window.innerWidth / 2, mouseSY = window.innerHeight / 2;   // latest mouse screen position
 canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 2) {                                  // right-click: charge the selected spell (fireball)
+        if (!isPaused && selectedSpell === 0) { e.preventDefault(); startCharge(); }
+        return;
+    }
     if (e.button !== 0) return;
     dragging = true; dragLastX = e.clientX; dragLastY = e.clientY;
     canvas.style.cursor = 'grabbing'; e.preventDefault();
 });
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());   // no browser menu on right-click
 window.addEventListener('mousemove', (e) => {
+    mouseSX = e.clientX; mouseSY = e.clientY;
     if (!dragging) return;
     camera.x -= (e.clientX - dragLastX) / zoom;
     camera.y -= (e.clientY - dragLastY) / zoom;
     dragLastX = e.clientX; dragLastY = e.clientY;
     clampCamera(); if (isPaused) drawRuler();
 });
-window.addEventListener('mouseup', () => { if (dragging) { dragging = false; canvas.style.cursor = 'grab'; } });
+window.addEventListener('mouseup', (e) => {
+    if (e.button === 2) { if (charging) releaseCharge(); return; }
+    if (dragging) { dragging = false; canvas.style.cursor = 'grab'; }
+});
 
 // ===========================================================
 //  SPRITES
 // ===========================================================
-const SPRITE_KEYS = ['creature', 'tree', 'hut', 'villager', 'fireball', 'goblin', 'ashes'];
+const SPRITE_KEYS = ['tree', 'hut', 'villager', 'fireball', 'goblin', 'ashes'];
 const images = {};
 function loadSprite(key) {
     const img = new Image(); img.crossOrigin = 'anonymous';
@@ -173,6 +187,25 @@ function loadAllVariations() {
     loadVariations('sign', 'images/sign', 'Sign');
     loadVariations('cave', 'images/cave', 'Cave');
     loadFixedImage('shrine', 'images/shrines/ShrineOfAsh.png');   // only the Shrine of Ash for now
+}
+
+// Creature image lives in images/creature/ named creature_<type>_<personality>.png.
+// We probe combinations; the first that loads sets the sprite AND the creature's voice.
+const CREATURE_TYPES = ['lion', 'lizard', 'tiger', 'wolf', 'bear', 'dragon', 'goat', 'owl', 'cat', 'fox'];
+const CREATURE_PERSONALITIES = ['adhd', 'snarky', 'nice', 'mean', 'wise', 'grumpy', 'cheerful', 'shy'];
+function loadCreatureImage() {
+    const combos = [];
+    for (const t of CREATURE_TYPES) for (const p of CREATURE_PERSONALITIES) combos.push([t, p]);
+    let idx = 0;
+    const tryNext = () => {
+        if (idx >= combos.length) { updateLog('No creature image in images/creature/ — using a placeholder. Voice: ' + activeVoice + '.'); return; }
+        const [t, p] = combos[idx++];
+        const img = new Image(); img.crossOrigin = 'anonymous';
+        img.onload = () => { images.creature = img; activeVoice = (p || 'adhd').toLowerCase() || 'adhd'; updateLog(`Creature: ${t} (${p}). Voice set to "${activeVoice}".`); };
+        img.onerror = tryNext;
+        img.src = `images/creature/creature_${t}_${p}.png`;
+    };
+    tryNext();
 }
 
 // ===========================================================
@@ -287,7 +320,14 @@ function drawRuler() {
     const leftM = camera.x / PIXELS_PER_METER, rightM = (camera.x + canvas.width / zoom) / PIXELS_PER_METER;
     for (let m = Math.ceil(leftM / 2) * 2; m <= rightM; m += 2) { const sx = (m * PIXELS_PER_METER - camera.x) * zoom; const major = (m % 10 === 0); r.beginPath(); r.moveTo(sx, 30); r.lineTo(sx, major ? 13 : 22); r.stroke(); if (major) r.fillText(m + 'm', sx + 2, 2); }
 }
-function pauseGame() { isPaused = true; pausePanel.classList.add('open'); rulerCanvas.style.display = 'block'; drawRuler(); }
+function renderApiUsage() {
+    if (!apiUsageEl) return;
+    if (!apiKeys.length) { apiUsageEl.innerHTML = '<p>No API keys set.</p>'; return; }
+    let html = '<p>API calls this session:</p>';
+    apiKeys.forEach((k, i) => { const tail = k.length > 4 ? k.slice(-4) : k; html += `<p>Key ${i + 1} (…${tail}): ${keyCallCounts[k] || 0}</p>`; });
+    apiUsageEl.innerHTML = html;
+}
+function pauseGame() { isPaused = true; renderApiUsage(); pausePanel.classList.add('open'); rulerCanvas.style.display = 'block'; drawRuler(); }
 function resumeGame() { closeKeysModal(); pausePanel.classList.remove('open'); rulerCanvas.style.display = 'none'; isPaused = false; lastTs = null; updateLog("Game resumed."); requestAnimationFrame(draw); }
 function togglePause() { isPaused ? resumeGame() : pauseGame(); }
 saveSettingsBtn.addEventListener('click', resumeGame);
@@ -316,7 +356,7 @@ function resetCreatureRuntime() {
 // ===========================================================
 //  VOICE
 // ===========================================================
-let voiceStyles = {}; let activeVoice = 'snarky';
+let voiceStyles = {}; let activeVoice = 'adhd';   // default until a creature's personality is loaded
 let voiceResponses = {};          // { styleName: { action: cannedResponseText } }
 let cannedCommands = {};          // { normalizedText: actionHeader }  (from canned.txt)
 function parseVoiceStyles(text) {
@@ -386,8 +426,9 @@ window.addEventListener('keydown', (e) => {
     if (k === 'escape') { e.preventDefault(); togglePause(); return; }
     if (typingInInput()) return;
     if (k === 'enter') { e.preventDefault(); commandInput.focus(); return; }
-    if (k === '=' || k === '+') { e.preventDefault(); setZoom(zoom * 1.12); return; }
-    if (k === '-' || k === '_') { e.preventDefault(); setZoom(zoom / 1.12); return; }
+    if (k === '=' || k === '+') { if (!isPaused) { e.preventDefault(); setZoom(zoom * 1.12); } return; }
+    if (k === '-' || k === '_') { if (!isPaused) { e.preventDefault(); setZoom(zoom / 1.12); } return; }
+    if (/^[0-9]$/.test(k)) { selectSpell(k === '0' ? 9 : (parseInt(k, 10) - 1)); return; }   // 1..9,0 select spell slots
     if (MOVE_KEYS.includes(k)) { keys[k] = true; if (k.startsWith('arrow')) e.preventDefault(); if (!controlsHintHidden) { controlsHint.style.display = 'none'; controlsHintHidden = true; } }
 });
 window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
@@ -456,7 +497,7 @@ function updateVillagers(dt, now) {
                 } else { v.x = nx; v.y = ny; }
             }
         }
-        if (Math.random() < 0.0011) {            // slowly add the next crop to the village's shared field
+        if (Math.random() < 0.00022) {           // 5x slower than before; add next crop to the shared field
             const center = (world.villages && world.villages[v.village]) || v.home;
             const cell = nextCropCell(center);
             if (cell) world.crops.push({ x: cell.x, y: cell.y, vseed: Math.random() });
@@ -482,7 +523,7 @@ function updateCreature(dt, now) {
     creature.x = nx; creature.y = ny;
 }
 
-function updateProjectiles() { for (let i = world.fireballs.length - 1; i >= 0; i--) { const f = world.fireballs[i]; const dx = f.targetX - f.x, dy = f.targetY - f.y, dist = Math.hypot(dx, dy); if (dist < 5) world.fireballs.splice(i, 1); else { f.x += (dx / dist) * 6; f.y += (dy / dist) * 6; } } }
+function updateProjectiles() { for (let i = world.fireballs.length - 1; i >= 0; i--) { const f = world.fireballs[i]; const dx = f.targetX - f.x, dy = f.targetY - f.y, dist = Math.hypot(dx, dy); const sp = f.speed || 6; if (dist < sp) { if (f.charged) explodeFireball(f.targetX, f.targetY, f.power); world.fireballs.splice(i, 1); } else { f.x += (dx / dist) * sp; f.y += (dy / dist) * sp; } } }
 function updateAshes() { const now = Date.now(); for (let i = world.ashes.length - 1; i >= 0; i--) if (now - world.ashes[i].born > ASH_LIFETIME_MS) world.ashes.splice(i, 1); }
 function maybeSpawnShrine() { if (world.shrines.length >= 8) return; if (Math.random() < 0.0006) { world.shrines.push(findLandSpot(80, 40)); updateLog("A shrine has appeared."); } }
 
@@ -568,7 +609,17 @@ function castSpreadHuts() { creature.act = 'busy'; statusBox.innerText = "Spread
 // Goblin burn chain
 // Shared village crop field: a rectangular grid south of the village center, filled row by row.
 // All villagers of a village target the SAME field, so they collectively fill neat rows/columns.
-const FIELD_COLS = 14, FIELD_ROWS = 9;
+const FIELD_COLS = 10, FIELD_ROWS = 6;   // ~half the old 14x9 field
+function cellBlocked(x, y) {
+    if (isWater(x, y, 6)) return true;
+    for (const h of world.huts) if (Math.hypot((h.x + 25) - x, (h.y + 25) - y) < 32) return true;
+    for (const t of world.trees) if (Math.hypot((t.x + 17) - x, (t.y + 22) - y) < 22) return true;
+    for (const w of world.wells) if (Math.hypot(w.x - x, w.y - y) < 26) return true;
+    for (const s of world.signs) if (Math.hypot(s.x - x, s.y - y) < 18) return true;
+    for (const c of world.caves) if (Math.hypot(c.x - x, c.y - y) < 30) return true;
+    for (const sh of world.shrines) if (Math.hypot(sh.x - x, sh.y - y) < 24) return true;
+    return false;
+}
 function nextCropCell(center) {
     if (!center) return null;
     const S = CROP_SPACING;
@@ -576,11 +627,9 @@ function nextCropCell(center) {
     const startY = center.y + 55;                            // field begins just south of the village
     for (let r = 0; r < FIELD_ROWS; r++) for (let c = 0; c < FIELD_COLS; c++) {
         const x = startX + c * S, y = startY + r * S;
-        if (isWater(x, y, 6)) continue;
         let taken = false; for (const cr of world.crops) if (Math.abs(cr.x - x) < S * 0.5 && Math.abs(cr.y - y) < S * 0.5) { taken = true; break; }
         if (taken) continue;
-        let onHut = false; for (const h of world.huts) if (Math.abs((h.x + 25) - x) < 30 && Math.abs((h.y + 25) - y) < 30) { onHut = true; break; }
-        if (onHut) continue;
+        if (cellBlocked(x, y)) continue;                     // don't plant over huts, trees, wells, etc.
         return { x, y };
     }
     return null;   // field full
@@ -654,6 +703,7 @@ async function callGemini(taskText, maxTokens = 800) {
         let lastErr = null;
         for (let attempt = 0; attempt < apiKeys.length; attempt++) {       // try each key once
             const key = apiKeys[keyIndex % apiKeys.length];
+            keyCallCounts[key] = (keyCallCounts[key] || 0) + 1;            // track usage per key (this session)
             keyIndex = (keyIndex + 1) % apiKeys.length;                     // round-robin for next call/retry
             const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`;
             const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -703,7 +753,7 @@ function drawTree(t) { if (imgReady('tree')) { ctx.drawImage(images.tree, t.x, t
 function drawHut(h) { if (imgReady('hut')) { ctx.drawImage(images.hut, h.x, h.y, 50, 50); return; } ctx.fillStyle = '#caa472'; ctx.fillRect(h.x + 6, h.y + 22, 38, 28); ctx.fillStyle = '#8a3b2a'; ctx.beginPath(); ctx.moveTo(h.x + 25, h.y); ctx.lineTo(h.x + 50, h.y + 24); ctx.lineTo(h.x, h.y + 24); ctx.closePath(); ctx.fill(); ctx.fillStyle = '#5a3a22'; ctx.fillRect(h.x + 20, h.y + 34, 11, 16); }
 function drawVillager(v) { if (imgReady('villager')) { ctx.drawImage(images.villager, v.x, v.y, 16, 24); return; } ctx.fillStyle = '#f1c27d'; ctx.beginPath(); ctx.arc(v.x + 8, v.y + 5, 5, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#3b6fb0'; ctx.fillRect(v.x + 3, v.y + 10, 10, 14); }
 function drawWheat(c) { const img = variantImg('wheat', c.vseed); if (img) { ctx.drawImage(img, c.x - 12, c.y - 12, 24, 24); return; } ctx.strokeStyle = '#d8b13a'; ctx.lineWidth = 2; for (let i = -1; i <= 1; i++) { ctx.beginPath(); ctx.moveTo(c.x + i * 5, c.y + 8); ctx.lineTo(c.x + i * 5, c.y - 6); ctx.stroke(); } }
-function drawShrine(s) { const img = variantImg('shrine', 0); if (img) { ctx.drawImage(img, s.x - 6, s.y - 12, 44, 50); return; } ctx.fillStyle = '#FFD700'; ctx.fillRect(s.x, s.y, 30, 30); }
+function drawShrine(s) { const img = variantImg('shrine', 0); if (img) ctx.drawImage(img, s.x - 6, s.y - 12, 44, 50); /* no yellow placeholder */ }
 function drawWell(w) { const img = variantImg('well', w.vseed); if (img) { ctx.drawImage(img, w.x - 22, w.y - 26, 44, 48); return; } ctx.fillStyle = '#777'; ctx.beginPath(); ctx.arc(w.x, w.y, 16, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#2b5b86'; ctx.beginPath(); ctx.arc(w.x, w.y, 9, 0, Math.PI * 2); ctx.fill(); }
 function drawSign(s) { const img = variantImg('sign', s.vseed); if (img) { ctx.drawImage(img, s.x - 14, s.y - 24, 28, 30); return; } ctx.fillStyle = '#6b4226'; ctx.fillRect(s.x - 2, s.y - 8, 4, 16); ctx.fillStyle = '#caa472'; ctx.fillRect(s.x - 12, s.y - 22, 24, 14); }
 function drawCave(c) { const img = variantImg('cave', c.vseed); if (img) { ctx.drawImage(img, c.x - 28, c.y - 30, 56, 56); return; } ctx.fillStyle = '#5a5560'; ctx.beginPath(); ctx.arc(c.x, c.y, 26, Math.PI, 0); ctx.fill(); ctx.fillStyle = '#15131a'; ctx.beginPath(); ctx.arc(c.x, c.y, 14, Math.PI, 0); ctx.fill(); }
@@ -750,6 +800,7 @@ function draw(ts) {
     updateGoblins(dt);
     updateAshes();
     updateStamina(dt);
+    updateCharge();
     maybeSpawnShrine();
     if ((frameCount = (frameCount + 1) % 60) === 0) maybeSpawnWell();   // check for new cities ~1x/sec
     requestAnimationFrame(draw);
@@ -1074,6 +1125,68 @@ keysFileInput.addEventListener('change', (e) => { const f = e.target.files && e.
 keysModal.addEventListener('click', (e) => { if (e.target === keysModal) closeKeysModal(); });   // click backdrop to close
 
 // ===========================================================
+//  SPELLS  (spell bar + chargeable fireball)
+// ===========================================================
+const SPELL_COUNT = 10;
+const SPELL_ICONS = ['🔥', '', '', '', '', '', '', '', '', ''];   // only fireball for now
+let selectedSpell = 0;
+let charging = false, chargeStart = 0, chargePower = 0;
+const FIRE_CHARGE_MS = 2500, FIRE_MAX_DIST_PX = m2px(100), FIRE_MAX_RADIUS_PX = m2px(25);
+
+function buildSpellBar() {
+    spellBarEl.innerHTML = '';
+    for (let i = 0; i < SPELL_COUNT; i++) {
+        const slot = document.createElement('div'); slot.className = 'spell-slot' + (i === selectedSpell ? ' selected' : '');
+        const num = document.createElement('div'); num.className = 'num'; num.textContent = (i === 9 ? 0 : i + 1);
+        const icon = document.createElement('div'); icon.className = 'icon'; icon.textContent = SPELL_ICONS[i] || '';
+        const charge = document.createElement('div'); charge.className = 'charge'; charge.appendChild(document.createElement('i'));
+        slot.appendChild(num); slot.appendChild(icon); slot.appendChild(charge);
+        slot.addEventListener('click', () => selectSpell(i));
+        spellBarEl.appendChild(slot);
+    }
+}
+function selectSpell(i) {
+    if (i < 0 || i >= SPELL_COUNT) return;
+    selectedSpell = i;
+    Array.from(spellBarEl.children).forEach((el, idx) => el.classList.toggle('selected', idx === selectedSpell));
+    if (charging && i !== 0) cancelCharge();
+}
+function chargeEl() { return spellBarEl.children[0] && spellBarEl.children[0].querySelector('.charge'); }
+function startCharge() { charging = true; chargeStart = performance.now(); const c = chargeEl(); if (c) c.classList.add('active'); }
+function cancelCharge() { charging = false; const c = chargeEl(); if (c) { c.classList.remove('active'); c.querySelector('i').style.width = '0%'; } }
+function updateCharge() { if (!charging) return; chargePower = Math.min(1, (performance.now() - chargeStart) / FIRE_CHARGE_MS); const c = chargeEl(); if (c) c.querySelector('i').style.width = (chargePower * 100) + '%'; }
+function releaseCharge() { if (!charging) return; const power = Math.max(0.05, chargePower); cancelCharge(); castFireball(power); chargePower = 0; }
+function castFireball(power) {
+    const cx = creature.x + 30, cy = creature.y + 33;
+    const wx = camera.x + mouseSX / zoom, wy = camera.y + mouseSY / zoom;   // mouse in world space sets the vector
+    let dx = wx - cx, dy = wy - cy; const d = Math.hypot(dx, dy) || 1; dx /= d; dy /= d;
+    const dist = power * FIRE_MAX_DIST_PX;
+    world.fireballs.push({ x: cx, y: cy, targetX: cx + dx * dist, targetY: cy + dy * dist, charged: true, power, speed: 14 });
+    statusBox.innerText = 'Hurls a fireball!';
+}
+function explodeFireball(x, y, power) {
+    showExplosionGif(x, y, power);
+    const radius = power * FIRE_MAX_RADIUS_PX;
+    const pools = [world.trees, world.huts, world.villagers, world.crops, world.goblins, world.wells, world.signs, world.shrines];
+    for (const arr of pools) for (let i = arr.length - 1; i >= 0; i--) {
+        const o = arr[i]; const isHut = (arr === world.huts); const ox = o.x + (isHut ? 25 : 0), oy = o.y + (isHut ? 25 : 0);
+        if (Math.hypot(ox - x, oy - y) <= radius) { arr.splice(i, 1); world.ashes.push(makeAshes(ox, oy)); }
+    }
+    // caves are intentionally NOT in the pools — they survive
+}
+function showExplosionGif(worldX, worldY, power) {
+    const diaWorld = power * FIRE_MAX_RADIUS_PX * 2;
+    const img = document.createElement('img');
+    img.src = 'images/fireball_explode.gif?' + Date.now();   // cache-bust so the gif animates from the start each time
+    img.style.position = 'fixed'; img.style.pointerEvents = 'none'; img.style.zIndex = '50';
+    const sx = (worldX - camera.x) * zoom, sy = (worldY - camera.y) * zoom, size = diaWorld * zoom;
+    img.style.left = (sx - size / 2) + 'px'; img.style.top = (sy - size / 2) + 'px';
+    img.style.width = size + 'px'; img.style.height = size + 'px';
+    document.body.appendChild(img);
+    setTimeout(() => img.remove(), 1100);
+}
+
+// ===========================================================
 //  INIT
 // ===========================================================
 if (gameTitleEl) gameTitleEl.textContent = '🥚 Egg v' + GAME_VERSION;
@@ -1087,6 +1200,8 @@ buildWaterLayer();
 loadCreatureVoice();
 loadCanned();
 loadAllVariations();
+loadCreatureImage();
+buildSpellBar();
 renderHearts(creature.hearts);
 renderStamina(creature.stamina);
 canvas.style.cursor = 'grab';
