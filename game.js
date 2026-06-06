@@ -12,7 +12,7 @@
    =========================================================== */
 
 const VERSION = "egg-v2.2";          // save-schema version (only bump when world data changes)
-const GAME_VERSION = "2.5";          // displayed build version — bump on every update
+const GAME_VERSION = "2.6";          // displayed build version — bump on every update
 
 const PIXELS_PER_METER = 10;
 const m2px = (m) => m * PIXELS_PER_METER;
@@ -23,6 +23,11 @@ const RUN_SPEED_MPS = 8.0;               // running
 const SEEK_SPEED_MPS = 3.2;              // base approach (scaled by run)
 const VILLAGER_SPEED_MPS = 1.0;
 const VILLAGER_LEASH_PX = m2px(20);      // villagers stay within 20 m of home
+const BABY_SCALE = 0.8;                  // baby villager render scale (80% of an adult)
+const BABY_GROW_MS = 120000;             // a baby grows into an adult after 2 min
+const VILLAGER_CAP = 80;                 // hard population cap (prevents runaway breeding)
+const REPRO_FIRST_S = 60, REPRO_EVERY_S = 300;   // first baby at 1 min, then every 5 min
+const HUT_CROWD_RADIUS_PX = m2px(200);
 const INTERACT_RANGE_PX = m2px(10);
 const INTERACT_COOLDOWN_MS = 10000;
 const FIREBALL_RANGE_M = 15;             // max allowed throw range
@@ -428,10 +433,11 @@ window.addEventListener('keydown', (e) => {
     if (k === 'enter') { e.preventDefault(); commandInput.focus(); return; }
     if (k === '=' || k === '+') { if (!isPaused) { e.preventDefault(); setZoom(zoom * 1.12); } return; }
     if (k === '-' || k === '_') { if (!isPaused) { e.preventDefault(); setZoom(zoom / 1.12); } return; }
+    if (k === ' ') { if (!isPaused && selectedSpell === 0 && !charging) { e.preventDefault(); startCharge(); } return; }   // hold space to charge fireball
     if (/^[0-9]$/.test(k)) { selectSpell(k === '0' ? 9 : (parseInt(k, 10) - 1)); return; }   // 1..9,0 select spell slots
     if (MOVE_KEYS.includes(k)) { keys[k] = true; if (k.startsWith('arrow')) e.preventDefault(); if (!controlsHintHidden) { controlsHint.style.display = 'none'; controlsHintHidden = true; } }
 });
-window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+window.addEventListener('keyup', (e) => { if (e.key === ' ') { if (charging) releaseCharge(); return; } keys[e.key.toLowerCase()] = false; });
 commandInput.addEventListener('focus', () => { for (const kk in keys) keys[kk] = false; });
 commandInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
@@ -478,6 +484,7 @@ function updateVillagers(dt, now) {
     const sp = VILLAGER_SPEED_MPS * PIXELS_PER_METER * dt;
     for (const v of world.villagers) {
         if (!v.home) v.home = { x: v.x, y: v.y };
+        if (v.baby && now - (v.bornAt || now) > BABY_GROW_MS) v.baby = false;   // grow up
         if (v.vstate === undefined) { v.vstate = 'moving'; v.vUntil = now + (1000 + Math.random() * 2000); v.heading = Math.random() * 6.283; }
         if (v.vstate === 'stopped') {
             if (now >= v.vUntil) {
@@ -509,6 +516,41 @@ const WALK_STATUS = ["Wandering aimlessly.", "Exploring the map.", "Off to see w
 function pickWalkStatus() { return WALK_STATUS[Math.floor(Math.random() * WALK_STATUS.length)]; }
 function enterStopped(now) { creature.moveState = 'stopped'; creature.stateUntil = now + (1000 + Math.random() * 2000); creature.heading = Math.random() * Math.PI * 2; statusBox.innerText = "Pausing to look around."; }
 
+// Villager reproduction: per 2 villagers in a 100 m area, a baby is born (first at 1 min, then every 5 min)
+let reproTimer = 0, reproNext = REPRO_FIRST_S;
+function spawnBabyNear(vi, vc) {
+    if (world.villagers.length >= VILLAGER_CAP) return;
+    let spot = vc; for (let a = 0; a < 10; a++) { const ang = Math.random() * 6.283, r = Math.random() * 120; const p = { x: vc.x + Math.cos(ang) * r, y: vc.y + Math.sin(ang) * r }; if (!isWater(p.x, p.y, 10)) { spot = p; break; } }
+    world.villagers.push({ x: spot.x, y: spot.y, home: { x: vc.x, y: vc.y }, village: vi, heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0, baby: true, bornAt: Date.now() });
+}
+function updateReproduction(dt) {
+    if (!world.villages || !world.villages.length) return;
+    reproTimer += dt; if (reproTimer < reproNext) return;
+    reproTimer = 0; reproNext = REPRO_EVERY_S;
+    let born = 0;
+    for (let vi = 0; vi < world.villages.length; vi++) {
+        const vc = world.villages[vi];
+        const pop = world.villagers.filter(v => Math.hypot(v.x - vc.x, v.y - vc.y) <= CITY_RADIUS_PX).length;
+        const babies = Math.floor(pop / 2);
+        for (let b = 0; b < babies; b++) { spawnBabyNear(vi, vc); born++; }
+    }
+    if (born) updateLog(born + " baby villager(s) born.");
+}
+// Crowding: when a 200 m area has > 4 villagers per hut, add one hut each minute
+let hutGrowTimer = 0;
+function updateHutGrowth(dt) {
+    if (!world.villages || !world.villages.length) return;
+    hutGrowTimer += dt; if (hutGrowTimer < 60) return; hutGrowTimer = 0;
+    for (let vi = 0; vi < world.villages.length; vi++) {
+        const vc = world.villages[vi];
+        const villagers = world.villagers.filter(v => Math.hypot(v.x - vc.x, v.y - vc.y) <= HUT_CROWD_RADIUS_PX).length;
+        const huts = world.huts.filter(h => Math.hypot((h.x + 25) - vc.x, (h.y + 25) - vc.y) <= HUT_CROWD_RADIUS_PX).length;
+        if (huts > 0 && villagers / huts > 4) {
+            for (let a = 0; a < 20; a++) { const hx = vc.x + (Math.random() * 220 - 110), hy = vc.y + (Math.random() * 220 - 110); if (canPlaceHut(hx, hy)) { world.huts.push({ x: hx, y: hy }); updateLog("Overcrowding — a new hut was built."); break; } }
+        }
+    }
+}
+
 function updateCreature(dt, now) {
     if (creature.act === 'busy') return;
     if (creature.act === 'seeking') { seekStep(dt); return; }
@@ -528,7 +570,6 @@ function updateAshes() { const now = Date.now(); for (let i = world.ashes.length
 function maybeSpawnShrine() { if (world.shrines.length >= 8) return; if (Math.random() < 0.0006) { world.shrines.push(findLandSpot(80, 40)); updateLog("A shrine has appeared."); } }
 
 const CITY_HUT_COUNT = 7, CITY_RADIUS_PX = m2px(100);
-// When 7+ huts sit within 100 m, drop a single well (the city center) + a sign nearby.
 function maybeSpawnWell() {
     if (world.huts.length < CITY_HUT_COUNT) return;
     for (const h of world.huts) {
@@ -751,7 +792,7 @@ function doVillagerInteraction(v) {
 // ===========================================================
 function drawTree(t) { if (imgReady('tree')) { ctx.drawImage(images.tree, t.x, t.y, 35, 45); return; } ctx.fillStyle = '#6b4226'; ctx.fillRect(t.x + 14, t.y + 28, 7, 17); ctx.fillStyle = '#2e6b2e'; ctx.beginPath(); ctx.moveTo(t.x + 17, t.y); ctx.lineTo(t.x + 34, t.y + 32); ctx.lineTo(t.x, t.y + 32); ctx.closePath(); ctx.fill(); }
 function drawHut(h) { if (imgReady('hut')) { ctx.drawImage(images.hut, h.x, h.y, 50, 50); return; } ctx.fillStyle = '#caa472'; ctx.fillRect(h.x + 6, h.y + 22, 38, 28); ctx.fillStyle = '#8a3b2a'; ctx.beginPath(); ctx.moveTo(h.x + 25, h.y); ctx.lineTo(h.x + 50, h.y + 24); ctx.lineTo(h.x, h.y + 24); ctx.closePath(); ctx.fill(); ctx.fillStyle = '#5a3a22'; ctx.fillRect(h.x + 20, h.y + 34, 11, 16); }
-function drawVillager(v) { if (imgReady('villager')) { ctx.drawImage(images.villager, v.x, v.y, 16, 24); return; } ctx.fillStyle = '#f1c27d'; ctx.beginPath(); ctx.arc(v.x + 8, v.y + 5, 5, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#3b6fb0'; ctx.fillRect(v.x + 3, v.y + 10, 10, 14); }
+function drawVillager(v) { const sc = v.baby ? BABY_SCALE : 1, w = 16 * sc, h = 24 * sc; if (imgReady('villager')) { ctx.drawImage(images.villager, v.x, v.y, w, h); return; } ctx.fillStyle = '#f1c27d'; ctx.beginPath(); ctx.arc(v.x + w / 2, v.y + 5 * sc, 5 * sc, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#3b6fb0'; ctx.fillRect(v.x + 3 * sc, v.y + 10 * sc, 10 * sc, 14 * sc); }
 function drawWheat(c) { const img = variantImg('wheat', c.vseed); if (img) { ctx.drawImage(img, c.x - 12, c.y - 12, 24, 24); return; } ctx.strokeStyle = '#d8b13a'; ctx.lineWidth = 2; for (let i = -1; i <= 1; i++) { ctx.beginPath(); ctx.moveTo(c.x + i * 5, c.y + 8); ctx.lineTo(c.x + i * 5, c.y - 6); ctx.stroke(); } }
 function drawShrine(s) { const img = variantImg('shrine', 0); if (img) ctx.drawImage(img, s.x - 6, s.y - 12, 44, 50); /* no yellow placeholder */ }
 function drawWell(w) { const img = variantImg('well', w.vseed); if (img) { ctx.drawImage(img, w.x - 22, w.y - 26, 44, 48); return; } ctx.fillStyle = '#777'; ctx.beginPath(); ctx.arc(w.x, w.y, 16, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#2b5b86'; ctx.beginPath(); ctx.arc(w.x, w.y, 9, 0, Math.PI * 2); ctx.fill(); }
@@ -795,6 +836,8 @@ function draw(ts) {
     renderScene();
 
     updateVillagers(dt, now);
+    updateReproduction(dt);
+    updateHutGrowth(dt);
     updateCreature(dt, now);
     updateProjectiles();
     updateGoblins(dt);
