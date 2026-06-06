@@ -4,6 +4,46 @@
 # and ignores extra spaces. (For burn lines, the target is read from the words, e.g.
 # "burn a hut" hits a hut; "burn some trees" chains across trees.)
 
+[attack]
+attack a tree
+attack a hut
+attack a villager
+attack a crop
+attack a goblin
+torch a tree
+attack goblin
+attack tree
+attack hut
+attack the hut
+attack the ogre
+attack ogre
+attack orge
+attack the ogre
+roast that orge
+roast that ogre
+
+
+[attack_many]
+attack goblins
+attack some goblins
+attack the goblins
+attack some trees
+attack the trees
+attack trees
+attack some huts
+attack the huts
+attack huts
+attack the villagers
+attack villagers
+attack everything
+attack those goblins
+attack those villagers
+attack the ogre
+attack ogres
+attack some ogres
+torch the ogre
+torch ogre
+
 [burn]
 burn a tree
 burn a hut
@@ -15,6 +55,13 @@ burn goblin
 burn tree
 burn hut
 burn the hut
+burn the ogre
+burn ogre
+burn orge
+burn the ogre
+roast that orge
+roast that ogre
+
 
 [burn_many]
 burn goblins
@@ -31,6 +78,9 @@ burn villagers
 burn everything
 burn those goblins
 burn those villagers
+burn the ogre
+burn ogres
+burn some ogres
 
 [run]
 run
