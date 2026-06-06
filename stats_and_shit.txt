@@ -1,0 +1,38 @@
+# stats_and_shit.txt — combat values for Egg. Edit freely; the game reads this on load.
+#
+#   hearts        = max health (in hearts; halves allowed, e.g. 0.5)
+#   attack_speed  = SECONDS between attacks (tenths ok, e.g. 0.1, 2.0, 4.0)
+#   attack_damage = hearts of damage per hit
+#   move_speed    = movement speed in meters/second
+#   run_speed     = creature's running speed in m/s (creature only)
+#   aggro_range   = meters at which it starts charging the creature (ogre)
+#
+# Spells (fireball): speed = projectile px/frame, damage = hearts at FULL charge.
+
+[creature]
+hearts = 3
+attack_speed = 1.2
+attack_damage = 2
+move_speed = 2.0
+run_speed = 8.0
+
+[villager]
+hearts = 1
+move_speed = 1.0
+
+[goblin]
+hearts = 2
+attack_speed = 4.0
+attack_damage = 0.5
+move_speed = 2.4
+
+[ogre]
+hearts = 5
+attack_speed = 2.0
+attack_damage = 2
+move_speed = 3.0
+aggro_range = 30
+
+[fireball]
+speed = 14
+damage = 4

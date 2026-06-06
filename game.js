@@ -12,16 +12,16 @@
    =========================================================== */
 
 const VERSION = "egg-v2.2";          // save-schema version (only bump when world data changes)
-const GAME_VERSION = "2.7";          // displayed build version — bump on every update
+const GAME_VERSION = "2.8";          // displayed build version — bump on every update
 
 const PIXELS_PER_METER = 10;
 const m2px = (m) => m * PIXELS_PER_METER;
 
 // Speeds & ranges
-const WANDER_SPEED_MPS = 2.0;            // creature stroll
-const RUN_SPEED_MPS = 8.0;               // running
+let WANDER_SPEED_MPS = 2.0;              // creature stroll (stats_and_shit.txt)
+let RUN_SPEED_MPS = 8.0;                 // running
 const SEEK_SPEED_MPS = 3.2;              // base approach (scaled by run)
-const VILLAGER_SPEED_MPS = 1.0;
+let VILLAGER_SPEED_MPS = 1.0;
 const VILLAGER_LEASH_PX = m2px(20);      // villagers stay within 20 m of home
 const BABY_SCALE = 0.8;                  // baby villager render scale (80% of an adult)
 const BABY_GROW_MS = 120000;             // a baby grows into an adult after 2 min
@@ -34,16 +34,17 @@ const FIREBALL_RANGE_M = 15;             // max allowed throw range
 const FIREBALL_RANGE_PX = m2px(FIREBALL_RANGE_M);
 const BURN_APPROACH_PX = m2px(11);       // creature walks up to ~11 m, then throws (within range)
 const GOBLIN_DETECT_PX = m2px(40);
-const GOBLIN_SPEED_MPS = 2.4;
+let GOBLIN_SPEED_MPS = 2.4;
 const GOBLIN_CONTACT_PX = 18;
-// --- combat / hearts (v2.7) ---
-const CREATURE_MAX_HEARTS = 3;
-const VILLAGER_HEARTS = 1, GOBLIN_HEARTS = 2, OGRE_HEARTS = 5;
-const ATTACK_RANGE_PX = m2px(5), CREATURE_ATTACK_DMG = 2;
-const GOBLIN_AGGRO_PX = m2px(50), GOBLIN_HIT_DMG = 0.5;
-const OGRE_AGGRO_PX = m2px(30), OGRE_ATTACK_DMG = 2, OGRE_CONTACT_PX = 24, OGRE_HEARTS_MAX = 5;
+// --- combat / hearts (read from stats_and_shit.txt; these are defaults) ---
+let CREATURE_MAX_HEARTS = 3, CREATURE_ATTACK_DMG = 2, CREATURE_ATTACK_MS = 1200;
+let VILLAGER_HEARTS = 1;
+let GOBLIN_HEARTS = 2, GOBLIN_HIT_DMG = 0.5, GOBLIN_ATTACK_MS = 4000;
+let OGRE_HEARTS = 5, OGRE_ATTACK_DMG = 2, OGRE_ATTACK_MS = 2000, OGRE_SPEED_MPS = 3.0, OGRE_AGGRO_PX = m2px(30);
+let FIRE_BASE_DMG = 4, FIRE_SPEED = 14;
+const ATTACK_RANGE_PX = m2px(5);
+const GOBLIN_AGGRO_PX = m2px(50), OGRE_CONTACT_PX = 24;
 const GOBLINHUT_MIN_VILLAGE_PX = m2px(300);
-const FIRE_BASE_DMG = 4;
 const GOBLIN_CHAIN_RANGE_PX = m2px(50);   // chain a burn-spree to the next target within 50 m
 const CROP_SPACING = 25;                  // grid spacing for villager crop fields (2.5 m)
 const GUARD_ENEMY_RANGE_PX = m2px(40);
@@ -170,7 +171,7 @@ window.addEventListener('mouseup', (e) => {
 // ===========================================================
 //  SPRITES
 // ===========================================================
-const SPRITE_KEYS = ['tree', 'hut', 'villager', 'fireball', 'goblin', 'ogre', 'ashes'];
+const SPRITE_KEYS = ['tree', 'hut', 'villager', 'fireball', 'goblin', 'ashes'];
 const images = {};
 function loadSprite(key) {
     const img = new Image(); img.crossOrigin = 'anonymous';
@@ -184,21 +185,23 @@ SPRITE_KEYS.forEach(loadSprite);
 // ---- Image variations system ----
 // Folders hold numbered variations (Wheat1.png, Wheat2.png, …). We probe upward until a 404,
 // collecting every variation found. Each placed object stores a random "vseed" to pick one consistently.
-const variations = { wheat: [], well: [], sign: [], cave: [], shrine: [], goblin_hut: [] };
-function loadVariations(cat, path, prefix, max = 40) {
+const variations = { wheat: [], well: [], sign: [], cave: [], shrine: [], goblin_hut: [], ogre: [] };
+function loadVariations(cat, path, prefix, max = 60) {
     variations[cat] = [];
-    const alt = prefix.charAt(0) === prefix.charAt(0).toUpperCase()
-        ? prefix.charAt(0).toLowerCase() + prefix.slice(1)
-        : prefix.charAt(0).toUpperCase() + prefix.slice(1);
-    let usePrefix = prefix, i = 1, triedAlt = false;
+    const cap = prefix.charAt(0).toUpperCase() + prefix.slice(1), low = prefix.charAt(0).toLowerCase() + prefix.slice(1);
+    const pad = (n) => String(n).padStart(2, '0');
+    // candidate filename builders, tried in order at index 1 to detect the naming scheme
+    const builders = [n => prefix + n, n => prefix + pad(n), n => cap + n, n => cap + pad(n), n => low + n, n => low + pad(n)];
+    let builder = null, i = 1, bi = 0;
+    const finish = () => { if (variations[cat].length) updateLog(`Loaded ${variations[cat].length} ${cat} variation(s).`); };
     const tryNext = () => {
         const img = new Image(); img.crossOrigin = 'anonymous';
-        img.onload = () => { variations[cat].push(img); i++; if (i <= max) tryNext(); };
+        img.onload = () => { variations[cat].push(img); if (!builder) builder = builders[bi]; i++; if (i <= max) tryNext(); else finish(); };
         img.onerror = () => {
-            if (i === 1 && !triedAlt) { triedAlt = true; usePrefix = alt; tryNext(); return; }   // try the other casing for #1
-            if (variations[cat].length) updateLog(`Loaded ${variations[cat].length} ${cat} variation(s).`);
+            if (!builder) { bi++; if (bi < builders.length) { tryNext(); return; } finish(); return; }   // no scheme matched at #1
+            finish();                                                                                      // scheme locked; this index is the end
         };
-        img.src = `${path}/${usePrefix}${i}.png`;
+        img.src = `${path}/${(builder || builders[bi])(i)}.png`;
     };
     tryNext();
 }
@@ -216,6 +219,7 @@ function loadAllVariations() {
     loadVariations('cave', 'images/cave', 'Cave');
     loadFixedImage('shrine', 'images/shrines/ShrineOfAsh.png');   // only the Shrine of Ash for now
     loadVariations('goblin_hut', 'images/goblin_buildings', 'goblin_hut');
+    loadVariations('ogre', 'images/orges', 'orge');
 }
 
 // Creature image lives in images/creature/ named creature_<type>_<personality>.png.
@@ -328,7 +332,7 @@ function generateWorld() {
     }
     world.shrines.push(findLandSpot(150, 60));
     for (let i = 0; i < 6; i++) { const c = findLandSpot(120, 50); world.caves.push({ x: c.x, y: c.y, vseed: Math.random() }); }   // caves at random
-    for (const cave of world.caves) world.ogres.push({ x: cave.x + 20, y: cave.y, home: { x: cave.x, y: cave.y }, hearts: OGRE_HEARTS, maxHearts: OGRE_HEARTS, mode: 'idle', heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0, attackCd: 0 });   // 1 ogre per cave
+    for (const cave of world.caves) world.ogres.push({ x: cave.x + 20, y: cave.y, home: { x: cave.x, y: cave.y }, hearts: OGRE_HEARTS, maxHearts: OGRE_HEARTS, mode: 'idle', heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0, attackCd: 0, vseed: Math.random() });   // 1 ogre per cave
     // existing roaming goblin packs (raiders)
     for (let g = 0; g < 3; g++) { const c = findLandSpot(120, 40); world.goblinGroups.push({ x: c.x, y: c.y, heading: Math.random() * Math.PI * 2, turnTimer: 120 + Math.random() * 240 }); const n = 2 + Math.floor(Math.random() * 2); for (let i = 0; i < n; i++) world.goblins.push(makeGoblin(c.x + (Math.random() * 40 - 20), c.y + (Math.random() * 40 - 20), 'raid', g)); }
     // goblin towns: groups of 3-6 huts, at least 300 m from every village
@@ -357,14 +361,14 @@ function normalizeWorld() {
         }
     });
     world.goblins.forEach(g => { if (g.hearts === undefined) { g.hearts = GOBLIN_HEARTS; g.maxHearts = GOBLIN_HEARTS; } if (!g.mode) g.mode = 'raid'; if (g.attackCd === undefined) g.attackCd = 0; if (g.vstate === undefined) { g.vstate = 'moving'; g.vUntil = 0; } });
-    world.ogres.forEach(o => { if (o.hearts === undefined) { o.hearts = OGRE_HEARTS; o.maxHearts = OGRE_HEARTS; } if (!o.home) o.home = { x: o.x, y: o.y }; if (!o.mode) o.mode = 'idle'; if (o.attackCd === undefined) o.attackCd = 0; if (o.vstate === undefined) { o.vstate = 'moving'; o.vUntil = 0; } });
+    world.ogres.forEach(o => { if (o.hearts === undefined) { o.hearts = OGRE_HEARTS; o.maxHearts = OGRE_HEARTS; } if (!o.home) o.home = { x: o.x, y: o.y }; if (!o.mode) o.mode = 'idle'; if (o.attackCd === undefined) o.attackCd = 0; if (o.vstate === undefined) { o.vstate = 'moving'; o.vUntil = 0; } if (o.vseed === undefined) o.vseed = Math.random(); });
     world.crops.forEach(c => { if (c.vseed === undefined) c.vseed = Math.random(); });
     world.wells.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); });
     world.signs.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); });
     world.caves.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); });
     world.goblinHuts.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); if (o.spawnCd === undefined) o.spawnCd = 120; });
     if (!world.caves.length) for (let i = 0; i < 6; i++) { const c = findLandSpot(120, 50); world.caves.push({ x: c.x, y: c.y, vseed: Math.random() }); }
-    if (!world.ogres.length) for (const cave of world.caves) world.ogres.push({ x: cave.x + 20, y: cave.y, home: { x: cave.x, y: cave.y }, hearts: OGRE_HEARTS, maxHearts: OGRE_HEARTS, mode: 'idle', heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0, attackCd: 0 });
+    if (!world.ogres.length) for (const cave of world.caves) world.ogres.push({ x: cave.x + 20, y: cave.y, home: { x: cave.x, y: cave.y }, hearts: OGRE_HEARTS, maxHearts: OGRE_HEARTS, mode: 'idle', heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0, attackCd: 0, vseed: Math.random() });
     if (creature.hearts === undefined) { creature.hearts = CREATURE_MAX_HEARTS; creature.maxHearts = CREATURE_MAX_HEARTS; }
 }
 
@@ -707,7 +711,7 @@ function creatureAutoAttack(now) {
     if (creature.dead) return;
     if (now < (creature.attackCd || 0)) return;
     const e = nearestEnemy(creature.x + 30, creature.y + 33, ATTACK_RANGE_PX);
-    if (e) { damageEntity(e.obj, e.arr, CREATURE_ATTACK_DMG); creature.attackCd = now + 1000 + Math.random() * 500; statusBox.innerText = 'Strikes an enemy!'; }
+    if (e) { damageEntity(e.obj, e.arr, CREATURE_ATTACK_DMG); creature.attackCd = now + CREATURE_ATTACK_MS; statusBox.innerText = 'Strikes an enemy!'; }
 }
 
 // ---- Attack command (melee version of burn) ----
@@ -738,7 +742,7 @@ function updateAttackCampaign(dt, now) {
     }
     const o = camp.cur, d = Math.hypot(o.x - (creature.x + 30), o.y - (creature.y + 33));
     if (d > ATTACK_RANGE_PX) { stepCreatureToward(o.x, o.y, SEEK_SPEED_MPS * PIXELS_PER_METER * dt * runMult()); statusBox.innerText = 'Charging an enemy...'; }
-    else if (now >= camp.nextHit) { statusBox.innerText = 'Attacking!'; const dead = damageEntity(o, camp.arr, CREATURE_ATTACK_DMG); if (dead) { camp.lastPos = { x: o.x, y: o.y }; camp.cur = null; camp.arr = null; } camp.nextHit = now + 1000 + Math.random() * 500; }
+    else if (now >= camp.nextHit) { statusBox.innerText = 'Attacking!'; const dead = damageEntity(o, camp.arr, CREATURE_ATTACK_DMG); if (dead) { camp.lastPos = { x: o.x, y: o.y }; camp.cur = null; camp.arr = null; } camp.nextHit = now + CREATURE_ATTACK_MS; }
 }
 
 // ---- Left-click: send the creature to a point ----
@@ -764,8 +768,8 @@ function updateOgres(dt, now) {
         const dToCreature = Math.hypot(o.x - cx, o.y - cy);
         if (!creature.dead && (o.mode === 'charging' || dToCreature <= OGRE_AGGRO_PX || o.hearts < o.maxHearts)) {
             o.mode = 'charging';
-            if (dToCreature > OGRE_CONTACT_PX) stepToward(o, cx, cy, m2px(3) * dt);
-            else if (now >= o.attackCd) { damageCreature(OGRE_ATTACK_DMG); o.attackCd = now + 2000; }
+            if (dToCreature > OGRE_CONTACT_PX) stepToward(o, cx, cy, m2px(OGRE_SPEED_MPS) * dt);
+            else if (now >= o.attackCd) { damageCreature(OGRE_ATTACK_DMG); o.attackCd = now + OGRE_ATTACK_MS; }
         } else { leashWander(o, dt, now, m2px(20), 1.0); }
     }
 }
@@ -807,7 +811,7 @@ function updateGoblins(dt) {
         const dCre = Math.hypot(gob.x - cx, gob.y - cy);
         if (!creature.dead && dCre <= GOBLIN_AGGRO_PX) {                 // within 50 m: always charge & attack the creature
             if (dCre > GOBLIN_CONTACT_PX) stepToward(gob, cx, cy, charge);
-            else if (now >= (gob.attackCd || 0)) { if (Math.random() < 0.5) damageCreature(GOBLIN_HIT_DMG); gob.attackCd = now + 3000 + Math.random() * 2000; }
+            else if (now >= (gob.attackCd || 0)) { if (Math.random() < 0.5) damageCreature(GOBLIN_HIT_DMG); gob.attackCd = now + GOBLIN_ATTACK_MS; }
         } else if (gob.mode === 'home' && gob.home) {                    // home goblins idle near their huts
             leashWander(gob, dt, now, m2px(20), GOBLIN_SPEED_MPS * 0.6);
         } else {                                                          // raiders: hunt villagers/huts, else march
@@ -1009,7 +1013,7 @@ function drawWell(w) { const img = variantImg('well', w.vseed); if (img) { ctx.d
 function drawSign(s) { const img = variantImg('sign', s.vseed); if (img) { ctx.drawImage(img, s.x - 14, s.y - 24, 28, 30); return; } ctx.fillStyle = '#6b4226'; ctx.fillRect(s.x - 2, s.y - 8, 4, 16); ctx.fillStyle = '#caa472'; ctx.fillRect(s.x - 12, s.y - 22, 24, 14); }
 function drawCave(c) { const img = variantImg('cave', c.vseed); if (img) { ctx.drawImage(img, c.x - 28, c.y - 30, 56, 56); return; } ctx.fillStyle = '#5a5560'; ctx.beginPath(); ctx.arc(c.x, c.y, 26, Math.PI, 0); ctx.fill(); ctx.fillStyle = '#15131a'; ctx.beginPath(); ctx.arc(c.x, c.y, 14, Math.PI, 0); ctx.fill(); }
 function drawGoblin(g) { if (imgReady('goblin')) { ctx.drawImage(images.goblin, g.x - 8, g.y - 11, 16, 22); return; } ctx.fillStyle = '#5a7d3a'; ctx.beginPath(); ctx.arc(g.x, g.y - 4, 4, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#3f5a28'; ctx.fillRect(g.x - 4, g.y, 8, 10); }
-function drawOgre(o) { if (imgReady('ogre')) { ctx.drawImage(images.ogre, o.x - 18, o.y - 26, 40, 46); return; } ctx.fillStyle = '#6b6f4a'; ctx.beginPath(); ctx.arc(o.x, o.y - 8, 9, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#4d5136'; ctx.fillRect(o.x - 9, o.y, 18, 22); }
+function drawOgre(o) { const img = variantImg('ogre', o.vseed); if (img) { ctx.drawImage(img, o.x - 22, o.y - 30, 48, 54); return; } ctx.fillStyle = '#6b6f4a'; ctx.beginPath(); ctx.arc(o.x, o.y - 8, 9, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#4d5136'; ctx.fillRect(o.x - 9, o.y, 18, 22); }
 function drawGoblinHut(h) { const img = variantImg('goblin_hut', h.vseed); if (img) { ctx.drawImage(img, h.x, h.y, 50, 50); return; } ctx.fillStyle = '#3a4a2a'; ctx.fillRect(h.x + 6, h.y + 22, 38, 28); ctx.fillStyle = '#26331c'; ctx.beginPath(); ctx.moveTo(h.x + 25, h.y); ctx.lineTo(h.x + 50, h.y + 24); ctx.lineTo(h.x, h.y + 24); ctx.closePath(); ctx.fill(); }
 let hoveredEntity = null, hoveredMax = 1;
 function drawFireball(f) { if (imgReady('fireball')) { ctx.drawImage(images.fireball, f.x - 12, f.y - 12, 25, 25); return; } const g = ctx.createRadialGradient(f.x, f.y, 2, f.x, f.y, 13); g.addColorStop(0, '#fff3b0'); g.addColorStop(0.5, '#ff8c1a'); g.addColorStop(1, 'rgba(200,40,0,0.1)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(f.x, f.y, 13, 0, Math.PI * 2); ctx.fill(); }
@@ -1437,7 +1441,7 @@ function castFireball(power) {
     const wx = camera.x + mouseSX / zoom, wy = camera.y + mouseSY / zoom;   // mouse in world space sets the vector
     let dx = wx - cx, dy = wy - cy; const d = Math.hypot(dx, dy) || 1; dx /= d; dy /= d;
     const dist = power * FIRE_MAX_DIST_PX;
-    world.fireballs.push({ x: cx, y: cy, targetX: cx + dx * dist, targetY: cy + dy * dist, charged: true, power, speed: 14 });
+    world.fireballs.push({ x: cx, y: cy, targetX: cx + dx * dist, targetY: cy + dy * dist, charged: true, power, speed: FIRE_SPEED });
     statusBox.innerText = 'Hurls a fireball!';
 }
 function explodeFireball(x, y, power) {
@@ -1467,26 +1471,68 @@ function showExplosionGif(worldX, worldY, power) {
 }
 
 // ===========================================================
+//  STATS FILE (stats_and_shit.txt)
+// ===========================================================
+// Sectioned key=value file. We map its values onto the mutable combat vars + per-entity hearts.
+async function loadStats() {
+    let parsed = {};
+    try {
+        const res = await fetch('stats_and_shit.txt', { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const text = await res.text(); let cur = null;
+        text.split(/\r?\n/).forEach(line => {
+            const l = line.trim(); if (!l || l.startsWith('#') || l.startsWith('//')) return;
+            const h = l.match(/^\[(.+?)\]$/); if (h) { cur = h[1].trim().toLowerCase(); parsed[cur] = {}; return; }
+            const m = l.match(/^([a-z_ ]+?)\s*[:=]\s*([-\d.]+)/i); if (m && cur) parsed[cur][m[1].trim().toLowerCase().replace(/\s+/g, '_')] = parseFloat(m[2]);
+        });
+        updateLog('Loaded combat stats from stats_and_shit.txt.');
+    } catch (e) { updateLog('No stats_and_shit.txt (' + e.message + ') — using built-in defaults.'); }
+    const g = (sec, key, def) => (parsed[sec] && parsed[sec][key] !== undefined) ? parsed[sec][key] : def;
+    // attack_speed is seconds between attacks
+    CREATURE_MAX_HEARTS = g('creature', 'hearts', CREATURE_MAX_HEARTS);
+    CREATURE_ATTACK_DMG = g('creature', 'attack_damage', CREATURE_ATTACK_DMG);
+    CREATURE_ATTACK_MS = g('creature', 'attack_speed', CREATURE_ATTACK_MS / 1000) * 1000;
+    WANDER_SPEED_MPS = g('creature', 'move_speed', WANDER_SPEED_MPS);
+    RUN_SPEED_MPS = g('creature', 'run_speed', RUN_SPEED_MPS);
+    VILLAGER_HEARTS = g('villager', 'hearts', VILLAGER_HEARTS);
+    VILLAGER_SPEED_MPS = g('villager', 'move_speed', VILLAGER_SPEED_MPS);
+    GOBLIN_HEARTS = g('goblin', 'hearts', GOBLIN_HEARTS);
+    GOBLIN_HIT_DMG = g('goblin', 'attack_damage', GOBLIN_HIT_DMG);
+    GOBLIN_ATTACK_MS = g('goblin', 'attack_speed', GOBLIN_ATTACK_MS / 1000) * 1000;
+    GOBLIN_SPEED_MPS = g('goblin', 'move_speed', GOBLIN_SPEED_MPS);
+    OGRE_HEARTS = g('ogre', 'hearts', OGRE_HEARTS);
+    OGRE_ATTACK_DMG = g('ogre', 'attack_damage', OGRE_ATTACK_DMG);
+    OGRE_ATTACK_MS = g('ogre', 'attack_speed', OGRE_ATTACK_MS / 1000) * 1000;
+    OGRE_SPEED_MPS = g('ogre', 'move_speed', OGRE_SPEED_MPS);
+    OGRE_AGGRO_PX = m2px(g('ogre', 'aggro_range', OGRE_AGGRO_PX / PIXELS_PER_METER));
+    FIRE_SPEED = g('fireball', 'speed', FIRE_SPEED);
+    FIRE_BASE_DMG = g('fireball', 'damage', FIRE_BASE_DMG);
+}
+
+// ===========================================================
 //  INIT
 // ===========================================================
-if (gameTitleEl) gameTitleEl.textContent = '🥚 Egg v' + GAME_VERSION;
-resizeCanvas();
-buildGrassPattern();
-loadRerunMemory();
-loadAiLog();
-loadApiKeys();
-loadGame();
-buildWaterLayer();
-loadCreatureVoice();
-loadCanned();
-loadAllVariations();
-loadCreatureImage();
-buildSpellBar();
-renderHearts(creature.hearts);
-renderStamina(creature.stamina);
-canvas.style.cursor = 'default';
-camera.x = creature.x - (canvas.width / zoom) / 2;
-camera.y = creature.y - (canvas.height / zoom) / 2;
-clampCamera();
-setInterval(saveGame, 10000);
-requestAnimationFrame(draw);
+(async function init() {
+    if (gameTitleEl) gameTitleEl.textContent = '🥚 Egg v' + GAME_VERSION;
+    resizeCanvas();
+    buildGrassPattern();
+    loadRerunMemory();
+    loadAiLog();
+    loadApiKeys();
+    await loadStats();          // load combat values BEFORE the world is generated
+    loadGame();
+    buildWaterLayer();
+    loadCreatureVoice();
+    loadCanned();
+    loadAllVariations();
+    loadCreatureImage();
+    buildSpellBar();
+    renderHearts(creature.hearts, creature.maxHearts || CREATURE_MAX_HEARTS);
+    renderStamina(creature.stamina);
+    canvas.style.cursor = 'default';
+    camera.x = creature.x - (canvas.width / zoom) / 2;
+    camera.y = creature.y - (canvas.height / zoom) / 2;
+    clampCamera();
+    setInterval(saveGame, 10000);
+    requestAnimationFrame(draw);
+})();
