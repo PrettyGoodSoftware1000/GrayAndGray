@@ -12,7 +12,7 @@
    =========================================================== */
 
 const VERSION = "egg-v2.2";          // save-schema version (only bump when world data changes)
-const GAME_VERSION = "2.8";          // displayed build version — bump on every update
+const GAME_VERSION = "2.9";          // displayed build version — bump on every update
 
 const PIXELS_PER_METER = 10;
 const m2px = (m) => m * PIXELS_PER_METER;
@@ -44,7 +44,7 @@ let OGRE_HEARTS = 5, OGRE_ATTACK_DMG = 2, OGRE_ATTACK_MS = 2000, OGRE_SPEED_MPS 
 let FIRE_BASE_DMG = 4, FIRE_SPEED = 14;
 const ATTACK_RANGE_PX = m2px(5);
 const GOBLIN_AGGRO_PX = m2px(50), OGRE_CONTACT_PX = 24;
-const GOBLINHUT_MIN_VILLAGE_PX = m2px(300);
+const GOBLINHUT_MIN_VILLAGE_PX = m2px(80);   // "far" on a 300m-wide map
 const GOBLIN_CHAIN_RANGE_PX = m2px(50);   // chain a burn-spree to the next target within 50 m
 const CROP_SPACING = 25;                  // grid spacing for villager crop fields (2.5 m)
 const GUARD_ENEMY_RANGE_PX = m2px(40);
@@ -103,7 +103,7 @@ const keys = {};
 let controlsHintHidden = false;
 
 // drag-to-pan
-let dragging = false, dragLastX = 0, dragLastY = 0;
+let dragging = false, dragLastX = 0, dragLastY = 0, dragMoved = false, dragStartX = 0, dragStartY = 0;
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -144,13 +144,8 @@ canvas.addEventListener('mousedown', (e) => {
         return;
     }
     if (e.button !== 0) return;
-    if (e.ctrlKey || e.metaKey) {                          // Ctrl/Cmd + drag pans the map
-        dragging = true; dragLastX = e.clientX; dragLastY = e.clientY; canvas.style.cursor = 'grabbing'; e.preventDefault(); return;
-    }
-    if (!isPaused && !creature.dead) {                     // plain left-click sends the creature there
-        const w = screenToWorld(e.clientX, e.clientY);
-        creature.goto = { x: w.x, y: w.y }; creature.act = 'goto'; statusBox.innerText = 'Walking over there.';
-    }
+    dragging = true; dragMoved = false; dragLastX = e.clientX; dragLastY = e.clientY; dragStartX = e.clientX; dragStartY = e.clientY;
+    canvas.style.cursor = 'grabbing'; e.preventDefault();
 });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());   // no browser menu on right-click
 window.addEventListener('mousemove', (e) => {
@@ -158,6 +153,7 @@ window.addEventListener('mousemove', (e) => {
     const w = screenToWorld(e.clientX, e.clientY);
     hoveredEntity = livingUnderCursor(w.x, w.y);
     if (!dragging) return;
+    if (!dragMoved && Math.hypot(e.clientX - dragStartX, e.clientY - dragStartY) > 5) dragMoved = true;   // distinguish click vs drag
     camera.x -= (e.clientX - dragLastX) / zoom;
     camera.y -= (e.clientY - dragLastY) / zoom;
     dragLastX = e.clientX; dragLastY = e.clientY;
@@ -165,7 +161,13 @@ window.addEventListener('mousemove', (e) => {
 });
 window.addEventListener('mouseup', (e) => {
     if (e.button === 2) { if (charging) releaseCharge(); return; }
+    if (e.button !== 0) return;
+    const wasDrag = dragMoved;
     if (dragging) { dragging = false; canvas.style.cursor = 'default'; }
+    if (!wasDrag && !isPaused && !creature.dead) {          // a click (not a drag) sends the creature there
+        const w = screenToWorld(e.clientX, e.clientY);
+        creature.goto = { x: w.x, y: w.y }; creature.act = 'goto'; statusBox.innerText = 'Walking over there.';
+    }
 });
 
 // ===========================================================
@@ -188,18 +190,21 @@ SPRITE_KEYS.forEach(loadSprite);
 const variations = { wheat: [], well: [], sign: [], cave: [], shrine: [], goblin_hut: [], ogre: [] };
 function loadVariations(cat, path, prefix, max = 60) {
     variations[cat] = [];
-    const cap = prefix.charAt(0).toUpperCase() + prefix.slice(1), low = prefix.charAt(0).toLowerCase() + prefix.slice(1);
+    const prefixes = Array.isArray(prefix) ? prefix : [prefix];
     const pad = (n) => String(n).padStart(2, '0');
-    // candidate filename builders, tried in order at index 1 to detect the naming scheme
-    const builders = [n => prefix + n, n => prefix + pad(n), n => cap + n, n => cap + pad(n), n => low + n, n => low + pad(n)];
+    const builders = [];
+    for (const pf of prefixes) {
+        const cap = pf.charAt(0).toUpperCase() + pf.slice(1), low = pf.charAt(0).toLowerCase() + pf.slice(1);
+        builders.push(n => pf + n, n => pf + pad(n), n => cap + n, n => cap + pad(n), n => low + n, n => low + pad(n));
+    }
     let builder = null, i = 1, bi = 0;
     const finish = () => { if (variations[cat].length) updateLog(`Loaded ${variations[cat].length} ${cat} variation(s).`); };
     const tryNext = () => {
         const img = new Image(); img.crossOrigin = 'anonymous';
         img.onload = () => { variations[cat].push(img); if (!builder) builder = builders[bi]; i++; if (i <= max) tryNext(); else finish(); };
         img.onerror = () => {
-            if (!builder) { bi++; if (bi < builders.length) { tryNext(); return; } finish(); return; }   // no scheme matched at #1
-            finish();                                                                                      // scheme locked; this index is the end
+            if (!builder) { bi++; if (bi < builders.length) { tryNext(); return; } finish(); return; }
+            finish();
         };
         img.src = `${path}/${(builder || builders[bi])(i)}.png`;
     };
@@ -217,9 +222,15 @@ function loadAllVariations() {
     loadVariations('well', 'images/well', 'Well');
     loadVariations('sign', 'images/sign', 'Sign');
     loadVariations('cave', 'images/cave', 'Cave');
-    loadFixedImage('shrine', 'images/shrines/ShrineOfAsh.png');   // only the Shrine of Ash for now
+    loadShrines();
     loadVariations('goblin_hut', 'images/goblin_buildings', 'goblin_hut');
-    loadVariations('ogre', 'images/orges', 'orge');
+    loadVariations('ogre', 'images/ogres', ['ogre', 'orge']);
+}
+// Shrines: pick a RANDOM png from images/shrines. Loads the known descriptive name(s) plus any numbered ones.
+function loadShrines() {
+    variations.shrine = [];
+    ['ShrineOfAsh'].forEach(name => { const img = new Image(); img.crossOrigin = 'anonymous'; img.onload = () => variations.shrine.push(img); img.src = 'images/shrines/' + name + '.png'; });
+    let i = 1; const tryNext = () => { const img = new Image(); img.crossOrigin = 'anonymous'; img.onload = () => { variations.shrine.push(img); i++; if (i <= 40) tryNext(); }; img.onerror = () => { }; img.src = 'images/shrines/Shrine' + i + '.png'; }; tryNext();
 }
 
 // Creature image lives in images/creature/ named creature_<type>_<personality>.png.
@@ -330,21 +341,31 @@ function generateWorld() {
         let spot = vc; for (let a = 0; a < 12; a++) { const ang = Math.random() * 6.283, r = Math.random() * 120; const p = { x: vc.x + Math.cos(ang) * r, y: vc.y + Math.sin(ang) * r }; if (!isWater(p.x, p.y, 10)) { spot = p; break; } }
         world.villagers.push({ x: spot.x, y: spot.y, home: { x: vc.x, y: vc.y }, village: vi, heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0, hearts: VILLAGER_HEARTS, maxHearts: VILLAGER_HEARTS });
     }
-    world.shrines.push(findLandSpot(150, 60));
+    const shrineCount = 1 + Math.floor(Math.random() * 2);   // 1-2 shrines per map
+    for (let i = 0; i < shrineCount; i++) { const s = findLandSpot(150, 60); world.shrines.push({ x: s.x, y: s.y, vseed: Math.random() }); }
     for (let i = 0; i < 6; i++) { const c = findLandSpot(120, 50); world.caves.push({ x: c.x, y: c.y, vseed: Math.random() }); }   // caves at random
     for (const cave of world.caves) world.ogres.push({ x: cave.x + 20, y: cave.y, home: { x: cave.x, y: cave.y }, hearts: OGRE_HEARTS, maxHearts: OGRE_HEARTS, mode: 'idle', heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0, attackCd: 0, vseed: Math.random() });   // 1 ogre per cave
     // existing roaming goblin packs (raiders)
     for (let g = 0; g < 3; g++) { const c = findLandSpot(120, 40); world.goblinGroups.push({ x: c.x, y: c.y, heading: Math.random() * Math.PI * 2, turnTimer: 120 + Math.random() * 240 }); const n = 2 + Math.floor(Math.random() * 2); for (let i = 0; i < n; i++) world.goblins.push(makeGoblin(c.x + (Math.random() * 40 - 20), c.y + (Math.random() * 40 - 20), 'raid', g)); }
-    // goblin towns: groups of 3-6 huts, at least 300 m from every village
+    // 2 goblin towns: kept away from villages, but guaranteed to spawn (pick the farthest of many candidates)
     for (let t = 0; t < 2; t++) {
-        let center = null;
-        for (let a = 0; a < 60; a++) { const p = findLandSpot(160, 60); if (world.villages.every(v => Math.hypot(v.x - p.x, v.y - p.y) >= GOBLINHUT_MIN_VILLAGE_PX)) { center = p; break; } }
-        if (!center) continue;
+        let center = null, bestFar = -1;
+        for (let a = 0; a < 120; a++) {
+            const p = findLandSpot(160, 60);
+            const far = world.villages.length ? Math.min(...world.villages.map(v => Math.hypot(v.x - p.x, v.y - p.y))) : 9999;
+            if (far >= GOBLINHUT_MIN_VILLAGE_PX) { center = p; break; }   // ideal: far enough
+            if (far > bestFar) { bestFar = far; center = p; }             // else remember the farthest so far
+        }
         const ti = world.goblinTowns.length; world.goblinTowns.push({ x: center.x, y: center.y });
         const huts = 3 + Math.floor(Math.random() * 4);
-        for (let h = 0; h < huts; h++) { for (let a = 0; a < 12; a++) { const hx = center.x + (Math.random() * 200 - 100), hy = center.y + (Math.random() * 200 - 100); if (!isWater(hx, hy, 20)) { world.goblinHuts.push({ x: hx, y: hy, vseed: Math.random(), town: ti, spawnCd: 120 }); break; } } }
+        for (let h = 0; h < huts; h++) {
+            for (let a = 0; a < 12; a++) {
+                const hx = center.x + (Math.random() * 200 - 100), hy = center.y + (Math.random() * 200 - 100);
+                if (!isWater(hx, hy, 20)) { world.goblinHuts.push({ x: hx, y: hy, vseed: Math.random(), town: ti, spawnCd: 120 }); world.goblins.push(makeGoblin(hx + 25, hy + 25, 'home', ti, world.goblinTowns[ti])); break; }   // seed 1 home goblin per hut
+            }
+        }
     }
-    updateLog("Generated a fresh world: villages, caves+ogres, goblin towns & raiders.");
+    updateLog("Generated a fresh world: 3 villages, 6 caves+ogres, 2 goblin towns, raiders & shrines.");
 }
 function makeGoblin(x, y, mode, group, home) {
     return { x, y, mode: mode || 'raid', group: group | 0, home: home || null, ox: Math.random() * 30 - 15, oy: Math.random() * 30 - 15, heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0, hearts: GOBLIN_HEARTS, maxHearts: GOBLIN_HEARTS, attackCd: 0 };
@@ -366,6 +387,7 @@ function normalizeWorld() {
     world.wells.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); });
     world.signs.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); });
     world.caves.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); });
+    world.shrines.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); });
     world.goblinHuts.forEach(o => { if (o.vseed === undefined) o.vseed = Math.random(); if (o.spawnCd === undefined) o.spawnCd = 120; });
     if (!world.caves.length) for (let i = 0; i < 6; i++) { const c = findLandSpot(120, 50); world.caves.push({ x: c.x, y: c.y, vseed: Math.random() }); }
     if (!world.ogres.length) for (const cave of world.caves) world.ogres.push({ x: cave.x + 20, y: cave.y, home: { x: cave.x, y: cave.y }, hearts: OGRE_HEARTS, maxHearts: OGRE_HEARTS, mode: 'idle', heading: Math.random() * 6.283, vstate: 'moving', vUntil: 0, attackCd: 0, vseed: Math.random() });
@@ -707,11 +729,14 @@ function nearestEnemy(fx, fy, maxPx) {
     return best;
 }
 // Creature auto-attacks any enemy within 5 m (runs regardless of current action)
+let lastAttackNarrationAt = 0;
+function enemyName(arr) { return arr === world.ogres ? 'ogre' : arr === world.goblins ? 'goblin' : arr === world.villagers ? 'villager' : 'enemy'; }
+function narrateAttack(arr, now) { if (now - lastAttackNarrationAt >= 15000) { lastAttackNarrationAt = now; narratorSays('The creature attacks the ' + enemyName(arr) + '.'); } }
 function creatureAutoAttack(now) {
     if (creature.dead) return;
     if (now < (creature.attackCd || 0)) return;
     const e = nearestEnemy(creature.x + 30, creature.y + 33, ATTACK_RANGE_PX);
-    if (e) { damageEntity(e.obj, e.arr, CREATURE_ATTACK_DMG); creature.attackCd = now + CREATURE_ATTACK_MS; statusBox.innerText = 'Strikes an enemy!'; }
+    if (e) { damageEntity(e.obj, e.arr, CREATURE_ATTACK_DMG); creature.attackCd = now + CREATURE_ATTACK_MS; statusBox.innerText = 'Strikes an enemy!'; narrateAttack(e.arr, now); }
 }
 
 // ---- Attack command (melee version of burn) ----
@@ -742,7 +767,7 @@ function updateAttackCampaign(dt, now) {
     }
     const o = camp.cur, d = Math.hypot(o.x - (creature.x + 30), o.y - (creature.y + 33));
     if (d > ATTACK_RANGE_PX) { stepCreatureToward(o.x, o.y, SEEK_SPEED_MPS * PIXELS_PER_METER * dt * runMult()); statusBox.innerText = 'Charging an enemy...'; }
-    else if (now >= camp.nextHit) { statusBox.innerText = 'Attacking!'; const dead = damageEntity(o, camp.arr, CREATURE_ATTACK_DMG); if (dead) { camp.lastPos = { x: o.x, y: o.y }; camp.cur = null; camp.arr = null; } camp.nextHit = now + CREATURE_ATTACK_MS; }
+    else if (now >= camp.nextHit) { statusBox.innerText = 'Attacking!'; narrateAttack(camp.arr, now); const dead = damageEntity(o, camp.arr, CREATURE_ATTACK_DMG); if (dead) { camp.lastPos = { x: o.x, y: o.y }; camp.cur = null; camp.arr = null; } camp.nextHit = now + CREATURE_ATTACK_MS; }
 }
 
 // ---- Left-click: send the creature to a point ----
@@ -840,9 +865,17 @@ function updateGoblins(dt) {
 //  ACTIONS
 // ===========================================================
 function makeAshes(x, y) { const specks = []; for (let k = 0; k < 6; k++) specks.push({ dx: Math.random() * 18 - 9, dy: Math.random() * 8 - 4 }); return { x, y, born: Date.now(), specks }; }
-function normalizeTarget(t) { if (!t) return 'any'; t = String(t).toLowerCase(); const map = { trees: 'tree', villagers: 'villager', huts: 'hut', house: 'hut', home: 'hut', crops: 'crop', goblins: 'goblin', something: 'any', anything: 'any', nearest: 'any' }; return map[t] || t; }
-function findNearestBurnable(targetType) { const pools = { tree: world.trees, villager: world.villagers, hut: world.huts, crop: world.crops, goblin: world.goblins }; const entries = pools[targetType] ? [[targetType, pools[targetType]]] : Object.entries(pools); const cx = creature.x + 30, cy = creature.y + 33; let best = null, bd = Infinity; for (const [type, arr] of entries) for (const o of arr) { const d = Math.hypot(o.x - cx, o.y - cy); if (d < bd) { bd = d; best = { type, arr, obj: o }; } } return best; }
-function spawnFireballAt(o, arr) { world.fireballs.push({ x: creature.x + 30, y: creature.y + 33, targetX: o.x, targetY: o.y }); setTimeout(() => { const i = arr.indexOf(o); if (i >= 0) { const rem = arr.splice(i, 1)[0]; world.ashes.push(makeAshes(rem.x, rem.y)); } }, 800); }
+function normalizeTarget(t) { if (!t) return 'any'; t = String(t).toLowerCase(); const map = { trees: 'tree', villagers: 'villager', huts: 'hut', house: 'hut', home: 'hut', crops: 'crop', goblins: 'goblin', ogres: 'ogre', something: 'any', anything: 'any', nearest: 'any' }; return map[t] || t; }
+function findNearestBurnable(targetType) { const pools = { tree: world.trees, villager: world.villagers, hut: world.huts, crop: world.crops, goblin: world.goblins, ogre: world.ogres }; const entries = pools[targetType] ? [[targetType, pools[targetType]]] : Object.entries(pools); const cx = creature.x + 30, cy = creature.y + 33; let best = null, bd = Infinity; for (const [type, arr] of entries) for (const o of arr) { const d = Math.hypot(o.x - cx, o.y - cy); if (d < bd) { bd = d; best = { type, arr, obj: o }; } } return best; }
+function spawnFireballAt(o, arr) {
+    world.fireballs.push({ x: creature.x + 30, y: creature.y + 33, targetX: o.x, targetY: o.y });
+    const living = (arr === world.villagers || arr === world.goblins || arr === world.ogres);
+    setTimeout(() => {
+        if (arr.indexOf(o) < 0) return;
+        if (living) damageEntity(o, arr, FIRE_BASE_DMG);                 // respects hearts (ogres take 2 hits)
+        else { const i = arr.indexOf(o); const rem = arr.splice(i, 1)[0]; world.ashes.push(makeAshes(rem.x, rem.y)); }
+    }, 800);
+}
 
 // Burn: ALWAYS walk up close, then throw from within range.
 function performBurn(targetType) {
@@ -891,7 +924,7 @@ function nextCropCell(center) {
 }
 
 // Burn-spree campaign: chain-burn a bunch of one target type (or "any")
-function burnablePools() { return { tree: world.trees, villager: world.villagers, hut: world.huts, crop: world.crops, goblin: world.goblins }; }
+function burnablePools() { return { tree: world.trees, villager: world.villagers, hut: world.huts, crop: world.crops, goblin: world.goblins, ogre: world.ogres }; }
 function nearestBurnable(type, x, y, maxPx) {
     const pools = burnablePools();
     const entries = (type && type !== 'any' && pools[type]) ? [[type, pools[type]]] : Object.entries(pools);
@@ -1008,7 +1041,7 @@ function drawTree(t) { if (imgReady('tree')) { ctx.drawImage(images.tree, t.x, t
 function drawHut(h) { if (imgReady('hut')) { ctx.drawImage(images.hut, h.x, h.y, 50, 50); return; } ctx.fillStyle = '#caa472'; ctx.fillRect(h.x + 6, h.y + 22, 38, 28); ctx.fillStyle = '#8a3b2a'; ctx.beginPath(); ctx.moveTo(h.x + 25, h.y); ctx.lineTo(h.x + 50, h.y + 24); ctx.lineTo(h.x, h.y + 24); ctx.closePath(); ctx.fill(); ctx.fillStyle = '#5a3a22'; ctx.fillRect(h.x + 20, h.y + 34, 11, 16); }
 function drawVillager(v) { const sc = v.baby ? BABY_SCALE : 1, w = 16 * sc, h = 24 * sc; if (imgReady('villager')) { ctx.drawImage(images.villager, v.x, v.y, w, h); return; } ctx.fillStyle = '#f1c27d'; ctx.beginPath(); ctx.arc(v.x + w / 2, v.y + 5 * sc, 5 * sc, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#3b6fb0'; ctx.fillRect(v.x + 3 * sc, v.y + 10 * sc, 10 * sc, 14 * sc); }
 function drawWheat(c) { const img = variantImg('wheat', c.vseed); if (img) { ctx.drawImage(img, c.x - 12, c.y - 12, 24, 24); return; } ctx.strokeStyle = '#d8b13a'; ctx.lineWidth = 2; for (let i = -1; i <= 1; i++) { ctx.beginPath(); ctx.moveTo(c.x + i * 5, c.y + 8); ctx.lineTo(c.x + i * 5, c.y - 6); ctx.stroke(); } }
-function drawShrine(s) { const img = variantImg('shrine', 0); if (img) ctx.drawImage(img, s.x - 6, s.y - 12, 44, 50); /* no yellow placeholder */ }
+function drawShrine(s) { const img = variantImg('shrine', s.vseed); if (img) ctx.drawImage(img, s.x - 6, s.y - 12, 44, 50); /* no yellow placeholder */ }
 function drawWell(w) { const img = variantImg('well', w.vseed); if (img) { ctx.drawImage(img, w.x - 22, w.y - 26, 44, 48); return; } ctx.fillStyle = '#777'; ctx.beginPath(); ctx.arc(w.x, w.y, 16, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#2b5b86'; ctx.beginPath(); ctx.arc(w.x, w.y, 9, 0, Math.PI * 2); ctx.fill(); }
 function drawSign(s) { const img = variantImg('sign', s.vseed); if (img) { ctx.drawImage(img, s.x - 14, s.y - 24, 28, 30); return; } ctx.fillStyle = '#6b4226'; ctx.fillRect(s.x - 2, s.y - 8, 4, 16); ctx.fillStyle = '#caa472'; ctx.fillRect(s.x - 12, s.y - 22, 24, 14); }
 function drawCave(c) { const img = variantImg('cave', c.vseed); if (img) { ctx.drawImage(img, c.x - 28, c.y - 30, 56, 56); return; } ctx.fillStyle = '#5a5560'; ctx.beginPath(); ctx.arc(c.x, c.y, 26, Math.PI, 0); ctx.fill(); ctx.fillStyle = '#15131a'; ctx.beginPath(); ctx.arc(c.x, c.y, 14, Math.PI, 0); ctx.fill(); }
@@ -1066,7 +1099,6 @@ function draw(ts) {
     updateAshes();
     updateStamina(dt);
     updateCharge();
-    maybeSpawnShrine();
     if ((frameCount = (frameCount + 1) % 60) === 0) maybeSpawnWell();   // check for new cities ~1x/sec
     requestAnimationFrame(draw);
 }
@@ -1146,13 +1178,14 @@ function burnIntent(text) {
     const t = (text || '').toLowerCase();
     if (!/\b(burn|torch|incinerate|set\s+(?:fire|aflame)|light\b.*\bon fire|blow up|firebomb)\b/.test(t)) return null;
     const many = /\b(some|several|a few|a bunch of|bunch|all|every|everything|lots of|loads of|many|the\s+\w+s\b)\b/.test(t)
-        || /\b(trees|huts|houses|homes|villagers|peasants|people|crops|goblins)\b/.test(t);
+        || /\b(trees|huts|houses|homes|villagers|peasants|people|crops|goblins|ogres)\b/.test(t);
     let type = null;
     if (/\btrees?\b/.test(t)) type = 'tree';
     else if (/\b(huts?|houses?|homes?)\b/.test(t)) type = 'hut';
     else if (/\b(villagers?|peasants?|people|humans?)\b/.test(t)) type = 'villager';
     else if (/\bcrops?\b/.test(t)) type = 'crop';
     else if (/\bgoblins?\b/.test(t)) type = 'goblin';
+    else if (/\bogres?\b/.test(t)) type = 'ogre';
     return { many, type };
 }
 function applyBurnIntent(d, text) {
@@ -1171,6 +1204,7 @@ function attackIntent(text) {
     let type = null;
     if (/\bogres?\b/.test(t)) type = 'ogre';
     else if (/\bgoblins?\b/.test(t)) type = 'goblin';
+    else if (/\bogres?\b/.test(t)) type = 'ogre';
     return { many, type };
 }
 function applyAttackIntent(d, text) { const ai = attackIntent(text); if (!ai) return false; d.action = ai.many ? 'attack_many' : 'attack'; d.target = ai.type || 'any'; return true; }
