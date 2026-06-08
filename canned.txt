@@ -1,48 +1,7 @@
 # canned.txt — exact-match commands that run WITHOUT calling the Gemini API.
 # Headers in [brackets] are the action categories the game understands.
-# Put any phrasings you want under the matching header. Matching is case-insensitive
-# and ignores extra spaces. (For burn lines, the target is read from the words, e.g.
-# "burn a hut" hits a hut; "burn some trees" chains across trees.)
-
-[attack]
-attack a tree
-attack a hut
-attack a villager
-attack a crop
-attack a goblin
-torch a tree
-attack goblin
-attack tree
-attack hut
-attack the hut
-attack the ogre
-attack ogre
-attack orge
-attack the ogre
-roast that orge
-roast that ogre
-
-
-[attack_many]
-attack goblins
-attack some goblins
-attack the goblins
-attack some trees
-attack the trees
-attack trees
-attack some huts
-attack the huts
-attack huts
-attack the villagers
-attack villagers
-attack everything
-attack those goblins
-attack those villagers
-attack the ogre
-attack ogres
-attack some ogres
-torch the ogre
-torch ogre
+# Put any phrasings you want under the matching header (case-insensitive, extra spaces ignored).
+# For burn/attack lines the target is read from the words (e.g. "burn a hut", "attack the ogres").
 
 [burn]
 burn a tree
@@ -50,117 +9,68 @@ burn a hut
 burn a villager
 burn a crop
 burn a goblin
-torch a tree
-burn goblin
-burn tree
-burn hut
-burn the hut
-burn the ogre
-burn ogre
-burn orge
-burn the ogre
-roast that orge
-roast that ogre
-
+burn an ogre
 
 [burn_many]
 burn goblins
 burn some goblins
-burn the goblins
-burn some trees
 burn the trees
-burn trees
 burn some huts
-burn the huts
-burn huts
 burn the villagers
-burn villagers
 burn everything
-burn those goblins
-burn those villagers
-burn the ogre
-burn ogres
-burn some ogres
+
+[attack]
+attack a goblin
+attack an ogre
+fight the ogre
+
+[attack_many]
+attack goblins
+attack some goblins
+attack the goblins
+fight the ogres
+kill the goblins
+
+[eat_crops]
+eat crops
+eat some wheat
+eat the crops
+graze
 
 [run]
 run
 hurry
 go faster
-move faster
 sprint
-go go go
-go fast
-fast
-hurry up
-faster
 
 [stop_running]
 slow down
 walk
 stop running
-ease up
-slow
-slow down
-slower
 
 [guard]
 guard the village
 defend the village
 protect the town
-guard
-protect the village
-protect
-guard a village
-guard village
-protect a village
-save village
-save the village
-guard villagers
-guard the villagers
-guard village
-
 
 [stop]
 stop
 cancel
 halt
 that's enough
-cancel 
-cancel that
-stop it
-stop that
 
 [grow]
 grow
 grow nature
-make plants
-grow crops
-grow trees
 
 [spread_huts]
 spread huts
 build a hut
-add a hut
-make huts
-make more huts
-spread the village
-more huts
-more village
-build the village
 
 [speak]
 say something
 talk to me
-talk
-what's up
-hi
-hey
-hello
 
 [idle]
 wait
 do nothing
-stand by
-chill
-chill out
-rest
