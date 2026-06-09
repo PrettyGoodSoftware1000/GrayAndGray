@@ -44,7 +44,7 @@ let OGRE_HEARTS = 5, OGRE_ATTACK_DMG = 2, OGRE_ATTACK_MS = 2000, OGRE_SPEED_MPS 
 let FIRE_BASE_DMG = 4, FIRE_SPEED = 14;
 const ATTACK_RANGE_PX = m2px(5);
 const EAT_RANGE_PX = m2px(5), EAT_COOLDOWN_MS = 3000;   // eat crops: within 5 m, 1 heart each, 3 s apart
-const HUT_DRAW_SCALE = 0.2;   // villager huts render at (native image size × this)
+const HUT_DRAW_SCALE = 0.18;   // villager huts render at (native image size × this)
 const GOBLIN_AGGRO_PX = m2px(50), OGRE_CONTACT_PX = 24;
 const GOBLINHUT_MIN_VILLAGE_PX = m2px(80);   // "far" on a 300m-wide map
 const GOBLIN_CHAIN_RANGE_PX = m2px(50);   // chain a burn-spree to the next target within 50 m
