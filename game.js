@@ -12,7 +12,7 @@
    =========================================================== */
 
 const VERSION = "egg-v2.2";          // save-schema version (only bump when world data changes)
-const GAME_VERSION = "3.3";          // displayed build version — bump on every update
+const GAME_VERSION = "3.4";          // displayed build version — bump on every update
 
 const PIXELS_PER_METER = 10;
 const m2px = (m) => m * PIXELS_PER_METER;
@@ -44,7 +44,7 @@ let OGRE_HEARTS = 5, OGRE_ATTACK_DMG = 2, OGRE_ATTACK_MS = 2000, OGRE_SPEED_MPS 
 let FIRE_BASE_DMG = 4, FIRE_SPEED = 14;
 const ATTACK_RANGE_PX = m2px(5);
 const EAT_RANGE_PX = m2px(5), EAT_COOLDOWN_MS = 3000;   // eat crops: within 5 m, 1 heart each, 3 s apart
-const HUT_DRAW_SCALE = 0.18;   // villager huts render at (native image size × this)
+const HUT_DRAW_SCALE = 1;   // villager huts render at (native image size × this)
 const GOBLIN_AGGRO_PX = m2px(50), OGRE_CONTACT_PX = 24;
 const GOBLINHUT_MIN_VILLAGE_PX = m2px(80);   // "far" on a 300m-wide map
 const GOBLIN_CHAIN_RANGE_PX = m2px(50);   // chain a burn-spree to the next target within 50 m
@@ -89,6 +89,10 @@ const treeModal = document.getElementById('tree-modal');
 const treeList = document.getElementById('tree-list');
 const treeCloseBtn = document.getElementById('tree-close-btn');
 const pauseChatCheckbox = document.getElementById('pause-chat-checkbox');
+const villagerModal = document.getElementById('villager-modal');
+const vilPraiseBtn = document.getElementById('vil-praise');
+const vilIgnoreBtn = document.getElementById('vil-ignore');
+const vilScoldBtn = document.getElementById('vil-scold');
 const heartsEl = document.getElementById('hearts');
 const staminaEl = document.getElementById('stamina');
 const apiUsageEl = document.getElementById('api-usage');
@@ -98,6 +102,8 @@ const WORLD_W = 3000, WORLD_H = 2200;
 
 let isPaused = false;
 let chatPaused = false;
+let dialogPaused = false;
+let burnAVillager = 50;   // saved "approval" meter for burning villagers
 let pauseWhenChatting = (localStorage.getItem('pauseWhenChatting') !== '0');   // default ON
 let apiKeys = [];          // up to many Gemini keys; rotated across requests / on rate limits
 let keyCallCounts = {};    // session: key string -> number of requests sent with it
@@ -106,7 +112,11 @@ const MAX_KEY_FIELDS = 5;  // manual "+" fields cap; file upload may add more
 
 let camera = { x: 0, y: 0 };
 let zoom = 1;
-const MIN_ZOOM = 0.5, MAX_ZOOM = 3, CAMERA_SPEED = 7;
+const MAX_VIEW_METERS = 100;             // most zoomed-OUT: screen spans 100 m
+const MIN_VIEW_METERS = 60;              // most zoomed-IN: screen spans 60 m
+function minZoom() { return canvas.width / (MAX_VIEW_METERS * PIXELS_PER_METER); }   // wider view = smaller zoom
+function maxZoom() { return canvas.width / (MIN_VIEW_METERS * PIXELS_PER_METER); }
+const CAMERA_SPEED = 7;
 const keys = {};
 let controlsHintHidden = false;
 
@@ -118,12 +128,12 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 // ===========================================================
 //  CANVAS / ZOOM / PAN
 // ===========================================================
-function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; clampCamera(); if (isPaused) drawRuler(); }
+function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; zoom = clamp(zoom, minZoom(), maxZoom()); clampCamera(); if (isPaused) drawRuler(); }
 window.addEventListener('resize', resizeCanvas);
 
 // Zoom, keeping the world point under (ax,ay) fixed. Defaults to screen center.
 function setZoom(nz, ax, ay) {
-    nz = clamp(nz, MIN_ZOOM, MAX_ZOOM);
+    nz = clamp(nz, minZoom(), maxZoom());
     if (ax === undefined) { ax = canvas.width / 2; ay = canvas.height / 2; }
     const wx = camera.x + ax / zoom, wy = camera.y + ay / zoom;
     zoom = nz;
@@ -246,26 +256,26 @@ function loadShrines() {
 // We probe combinations; the first that loads sets the sprite AND the creature's voice.
 const CREATURE_TYPES = ['lion', 'lizard', 'tiger', 'wolf', 'bear', 'dragon', 'goat', 'owl', 'cat', 'fox'];
 const CREATURE_PERSONALITIES = ['adhd', 'snarky', 'nice', 'mean', 'wise', 'grumpy', 'cheerful', 'shy'];
-function loadCreatureImage(shuffle) {
-    const combos = [];
-    for (const t of CREATURE_TYPES) for (const p of CREATURE_PERSONALITIES) combos.push([t, p]);
-    if (shuffle) for (let i = combos.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[combos[i], combos[j]] = [combos[j], combos[i]]; }
-    let idx = 0;
-    const tryNext = () => {
-        if (idx >= combos.length) { updateLog('No creature image in images/creature/ — using a placeholder. Voice: ' + activeVoice + '.'); return; }
-        const [t, p] = combos[idx++];
-        const img = new Image(); img.crossOrigin = 'anonymous';
-        img.onload = () => { images.creature = img; activeVoice = (p || 'adhd').toLowerCase() || 'adhd'; updateLog(`Creature: ${t} (${p}). Voice set to "${activeVoice}".`); };
-        img.onerror = tryNext;
-        img.src = `images/creature/creature_${t}_${p}.png`;
-    };
-    tryNext();
+let creatureImages = [], creatureIndex = -1;
+function applyCreature(entry) {
+    if (!entry) return;
+    images.creature = entry.img; activeVoice = (entry.personality || 'adhd').toLowerCase() || 'adhd';
+    updateLog(`Creature: ${entry.type} (${entry.personality}). Voice "${activeVoice}".`);
 }
-// "change creature" — pick a random available creature image and match the voice to its personality
+function loadCreatureImage() {
+    creatureImages = []; creatureIndex = -1;
+    for (const t of CREATURE_TYPES) for (const p of CREATURE_PERSONALITIES) {
+        const img = new Image(); img.crossOrigin = 'anonymous';
+        img.onload = () => { creatureImages.push({ img, type: t, personality: p }); if (creatureIndex < 0) { creatureIndex = 0; applyCreature(creatureImages[0]); } };
+        img.src = `images/creature/creature_${t}_${p}.png`;
+    }
+}
+// "change creature" — cycle to the NEXT available creature (loops through all of them, repeatable)
 function changeCreature() {
-    activeVoice = 'adhd';                 // default if nothing matches
+    if (!creatureImages.length) { activeVoice = 'adhd'; narratorSays('No creature images found in images/creature/.'); return; }
+    creatureIndex = (creatureIndex + 1) % creatureImages.length;
+    applyCreature(creatureImages[creatureIndex]);
     narratorSays('The creature takes a new form.');
-    loadCreatureImage(true);              // random order -> a different creature each time
 }
 
 // ===========================================================
@@ -329,7 +339,8 @@ function inLake(x, y, pad = 0) { return world.lakes.some(l => { const nx = (x - 
 function nearRiver(x, y, pad = 0) { return world.rivers.some(r => { for (let i = 0; i < r.points.length - 1; i++) { const a = r.points[i], b = r.points[i + 1]; if (distToSegment(x, y, a.x, a.y, b.x, b.y) < r.width / 2 + pad) return true; } return false; }); }
 function isWater(x, y, pad = 0) { return inLake(x, y, pad) || nearRiver(x, y, pad); }
 function findLandSpot(margin = 60, waterPad = 25) { for (let i = 0; i < 80; i++) { const x = margin + Math.random() * (WORLD_W - margin * 2), y = margin + Math.random() * (WORLD_H - margin * 2); if (!isWater(x, y, waterPad)) return { x, y }; } return { x: WORLD_W / 2, y: WORLD_H / 2 }; }
-function canPlaceHut(x, y) { if (isWater(x, y, 15)) return false; const cx = x + 25, cy = y + 25; for (const h of world.huts) if (Math.hypot((h.x + 25) - cx, (h.y + 25) - cy) < MIN_HUT_DIST_PX) return false; return true; }
+function hutCollisionDist() { let m = MIN_HUT_DIST_PX; for (const img of variations.hut) m = Math.max(m, (img.naturalWidth || 0) * HUT_DRAW_SCALE, (img.naturalHeight || 0) * HUT_DRAW_SCALE); return m; }
+function canPlaceHut(x, y) { if (isWater(x, y, 15)) return false; const cx = x + 25, cy = y + 25, d = hutCollisionDist(); for (const h of world.huts) if (Math.hypot((h.x + 25) - cx, (h.y + 25) - cy) < d) return false; return true; }
 function nearestHutCenter(x, y) { let best = null, bd = Infinity; for (const h of world.huts) { const c = { x: h.x + 25, y: h.y + 25 }; const d = Math.hypot(c.x - x, c.y - y); if (d < bd) { bd = d; best = c; } } return best; }
 
 function generateWorld(opts) {
@@ -463,10 +474,10 @@ saveSettingsBtn.addEventListener('click', resumeGame);
 // ===========================================================
 //  STORAGE
 // ===========================================================
-function saveGame() { if (isPaused) return; localStorage.setItem('creatureGameState', JSON.stringify({ version: VERSION, world, creature, camera, zoom })); }
+function saveGame() { if (isPaused) return; localStorage.setItem('creatureGameState', JSON.stringify({ version: VERSION, world, creature, camera, zoom, burn_a_villager: burnAVillager })); }
 function loadGame() {
     const saved = localStorage.getItem('creatureGameState'); let ok = false;
-    if (saved) { try { const data = JSON.parse(saved); if (data.version === VERSION && data.world && data.world.rivers) { world = data.world; creature = data.creature; if (data.camera) camera = data.camera; if (data.zoom) zoom = data.zoom; normalizeWorld(); updateLog("World state loaded."); ok = true; } } catch (e) { console.warn("Bad save, regenerating.", e); } }
+    if (saved) { try { const data = JSON.parse(saved); if (data.version === VERSION && data.world && data.world.rivers) { world = data.world; creature = data.creature; if (data.camera) camera = data.camera; if (data.zoom) zoom = data.zoom; if (typeof data.burn_a_villager === 'number') burnAVillager = data.burn_a_villager; normalizeWorld(); updateLog("World state loaded."); ok = true; } } catch (e) { console.warn("Bad save, regenerating.", e); } }
     if (!ok) generateWorld();
     resetCreatureRuntime();
 }
@@ -957,7 +968,7 @@ function spawnFireballAt(o, arr) {
     const living = (arr === world.villagers || arr === world.goblins || arr === world.ogres);
     setTimeout(() => {
         if (arr.indexOf(o) < 0) return;
-        if (living) damageEntity(o, arr, FIRE_BASE_DMG);                 // respects hearts (ogres take 2 hits)
+        if (living) { const dead = damageEntity(o, arr, FIRE_BASE_DMG); if (dead && arr === world.villagers) onCreatureBurnedVillager(); }   // respects hearts
         else { const i = arr.indexOf(o); const rem = arr.splice(i, 1)[0]; world.ashes.push(makeAshes(rem.x, rem.y)); }
     }, 800);
 }
@@ -1115,7 +1126,7 @@ function doVillagerInteraction(v) {
     const acts = Object.keys(lines);
     const a = acts[Math.floor(Math.random() * acts.length)];
     const pool = lines[a]; narratorSays(pool[Math.floor(Math.random() * pool.length)]);
-    if (a === 'eat') { const i = world.villagers.indexOf(v); if (i >= 0) world.villagers.splice(i, 1); }
+    if (a === 'eat') { const i = world.villagers.indexOf(v); if (i >= 0) { world.villagers.splice(i, 1); onCreatureBurnedVillager(); } }
     finishInteraction();
 }
 
@@ -1184,7 +1195,7 @@ function draw(ts) {
     updateCamera();
     renderScene();
 
-    if (!chatPaused) {                                  // "pause when chatting": freeze the sim, keep rendering
+    if (!chatPaused && !dialogPaused) {                 // freeze sim while chatting or while the villager dialog is open
         updateVillagers(dt, now);
         updateReproduction(dt);
         updateHutGrowth(dt);
@@ -1449,13 +1460,14 @@ function importSave(file) {
             if (data.creature) creature = data.creature;
             if (data.camera) camera = data.camera;
             if (typeof data.zoom === 'number') zoom = data.zoom;
+            if (typeof data.burn_a_villager === 'number') burnAVillager = data.burn_a_villager;
             if (data.rerunCommands && typeof data.rerunCommands === 'object') { rerunMemory = data.rerunCommands; saveRerunMemory(); }
             normalizeWorld();
             resetCreatureRuntime();
             buildWaterLayer();
             renderHearts(creature.hearts); renderStamina(creature.stamina); lastStamina = creature.stamina;
             clampCamera();
-            localStorage.setItem('creatureGameState', JSON.stringify({ version: VERSION, world, creature, camera, zoom }));
+            localStorage.setItem('creatureGameState', JSON.stringify({ version: VERSION, world, creature, camera, zoom, burn_a_villager: burnAVillager }));
             updateLog("Save imported" + (data.savedAt ? " (from " + data.savedAt + ")" : "") + ".");
             narratorSays("A saved world settles into place.");
             renderScene(); if (isPaused) drawRuler();
@@ -1484,6 +1496,19 @@ function newGame() {
     if (isPaused) resumeGame();      // unpause so the new map is shown and live
 }
 newGameBtn.addEventListener('click', newGame);
+
+// ===========================================================
+//  VILLAGER DIALOG (creature burned/attacked a villager)
+// ===========================================================
+function onCreatureBurnedVillager() {
+    if (dialogPaused || isPaused) return;          // one at a time
+    dialogPaused = true;
+    villagerModal.classList.add('open');
+}
+function closeVillagerDialog() { villagerModal.classList.remove('open'); dialogPaused = false; }
+vilIgnoreBtn.addEventListener('click', () => { narratorSays("You've ignored the creature for now."); closeVillagerDialog(); });
+vilPraiseBtn.addEventListener('click', () => { narratorSays("Who's a good boy? You are."); burnAVillager += 10; saveGame(); closeVillagerDialog(); });
+vilScoldBtn.addEventListener('click', () => { narratorSays("Stop that! No! Bad Creature! Bad"); burnAVillager -= 10; saveGame(); closeVillagerDialog(); });
 
 // ===========================================================
 //  API KEYS
@@ -1586,14 +1611,16 @@ function explodeFireball(x, y, power) {
     const radius = power * FIRE_MAX_RADIUS_PX;
     const dmg = power * FIRE_BASE_DMG;                                  // 4 hearts at full charge, 2 at 50%
     // living things take heart damage
+    let villagerKilled = false;
     for (const arr of [world.villagers, world.goblins, world.ogres]) for (let i = arr.length - 1; i >= 0; i--) {
-        const o = arr[i]; if (Math.hypot(o.x - x, o.y - y) <= radius) damageEntity(o, arr, dmg);
+        const o = arr[i]; if (Math.hypot(o.x - x, o.y - y) <= radius) { const dead = damageEntity(o, arr, dmg); if (dead && arr === world.villagers) villagerKilled = true; }
     }
     // non-living objects are destroyed to ash
     for (const arr of [world.trees, world.huts, world.crops, world.wells, world.signs, world.shrines, world.goblinHuts]) for (let i = arr.length - 1; i >= 0; i--) {
         const o = arr[i]; const c = entityCenter(o, arr); if (Math.hypot(c.x - x, c.y - y) <= radius) { arr.splice(i, 1); world.ashes.push(makeAshes(c.x, c.y)); }
     }
     // caves survive
+    if (villagerKilled) onCreatureBurnedVillager();
 }
 function showExplosionGif(worldX, worldY, power) {
     const diaWorld = power * FIRE_MAX_RADIUS_PX * 2;
@@ -1703,6 +1730,7 @@ async function loadStats() {
     renderHearts(creature.hearts, creature.maxHearts || CREATURE_MAX_HEARTS);
     renderStamina(creature.stamina);
     canvas.style.cursor = 'default';
+    zoom = clamp(zoom, minZoom(), maxZoom());          // keep within the 60-100 m view range
     camera.x = creature.x - (canvas.width / zoom) / 2;
     camera.y = creature.y - (canvas.height / zoom) / 2;
     clampCamera();

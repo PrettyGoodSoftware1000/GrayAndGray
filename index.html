@@ -172,15 +172,15 @@
         button:hover { filter: brightness(1.15); }
 
         /* Keys modal */
-        #keys-modal, #tree-modal {
+        #keys-modal, #tree-modal, #villager-modal {
             display: none;
             position: fixed; inset: 0;
             background: rgba(0, 0, 0, 0.7);
             z-index: 100;
             align-items: center; justify-content: center;
         }
-        #keys-modal.open, #tree-modal.open { display: flex; }
-        #keys-modal .modal-box, #tree-modal .modal-box {
+        #keys-modal.open, #tree-modal.open, #villager-modal.open { display: flex; }
+        #keys-modal .modal-box, #tree-modal .modal-box, #villager-modal .modal-box {
             background: #222; border: 3px solid var(--panel-border);
             border-radius: 8px; padding: 18px; width: min(520px, 92vw);
             max-height: 88vh; overflow-y: auto;
@@ -281,6 +281,19 @@
             <p class="modal-hint">Things you can tell the creature (type in the Speak box). Press T to close.</p>
             <div id="tree-list"></div>
             <div class="modal-row"><button id="tree-close-btn">Close</button></div>
+        </div>
+    </div>
+
+    <!-- Villager burned/attacked dialog -->
+    <div id="villager-modal" class="keys-modal-style">
+        <div class="modal-box">
+            <h2>&#128293; A villager!</h2>
+            <p id="villager-modal-text" class="modal-hint" style="font-size:1em;color:#eee;">Your creature has burned a villager! What will you do?</p>
+            <div class="modal-row">
+                <button id="vil-praise">Praise it</button>
+                <button id="vil-ignore">Ignore it</button>
+                <button id="vil-scold">Scold it</button>
+            </div>
         </div>
     </div>
 
