@@ -12,7 +12,7 @@
    =========================================================== */
 
 const VERSION = "egg-v2.2";          // save-schema version (only bump when world data changes)
-const GAME_VERSION = "3.2";          // displayed build version — bump on every update
+const GAME_VERSION = "3.3";          // displayed build version — bump on every update
 
 const PIXELS_PER_METER = 10;
 const m2px = (m) => m * PIXELS_PER_METER;
@@ -44,6 +44,7 @@ let OGRE_HEARTS = 5, OGRE_ATTACK_DMG = 2, OGRE_ATTACK_MS = 2000, OGRE_SPEED_MPS 
 let FIRE_BASE_DMG = 4, FIRE_SPEED = 14;
 const ATTACK_RANGE_PX = m2px(5);
 const EAT_RANGE_PX = m2px(5), EAT_COOLDOWN_MS = 3000;   // eat crops: within 5 m, 1 heart each, 3 s apart
+const HUT_DRAW_SCALE = 1;   // villager huts render at (native image size × this)
 const GOBLIN_AGGRO_PX = m2px(50), OGRE_CONTACT_PX = 24;
 const GOBLINHUT_MIN_VILLAGE_PX = m2px(80);   // "far" on a 300m-wide map
 const GOBLIN_CHAIN_RANGE_PX = m2px(50);   // chain a burn-spree to the next target within 50 m
@@ -1122,7 +1123,16 @@ function doVillagerInteraction(v) {
 //  DRAW
 // ===========================================================
 function drawTree(t) { if (imgReady('tree')) { ctx.drawImage(images.tree, t.x, t.y, 35, 45); return; } ctx.fillStyle = '#6b4226'; ctx.fillRect(t.x + 14, t.y + 28, 7, 17); ctx.fillStyle = '#2e6b2e'; ctx.beginPath(); ctx.moveTo(t.x + 17, t.y); ctx.lineTo(t.x + 34, t.y + 32); ctx.lineTo(t.x, t.y + 32); ctx.closePath(); ctx.fill(); }
-function drawHut(h) { const img = variantImg('hut', h.vseed); if (img) { ctx.drawImage(img, h.x, h.y, 50, 50); return; } ctx.fillStyle = '#caa472'; ctx.fillRect(h.x + 6, h.y + 22, 38, 28); ctx.fillStyle = '#8a3b2a'; ctx.beginPath(); ctx.moveTo(h.x + 25, h.y); ctx.lineTo(h.x + 50, h.y + 24); ctx.lineTo(h.x, h.y + 24); ctx.closePath(); ctx.fill(); ctx.fillStyle = '#5a3a22'; ctx.fillRect(h.x + 20, h.y + 34, 11, 16); }
+function drawHut(h) {
+    const img = variantImg('hut', h.vseed);
+    if (img) {
+        const w = (img.naturalWidth || img.width || 50) * HUT_DRAW_SCALE;
+        const ht = (img.naturalHeight || img.height || 50) * HUT_DRAW_SCALE;
+        ctx.drawImage(img, h.x + 25 - w / 2, h.y + 25 - ht / 2, w, ht);   // sized to the source art, centered on the hut
+        return;
+    }
+    ctx.fillStyle = '#caa472'; ctx.fillRect(h.x + 6, h.y + 22, 38, 28); ctx.fillStyle = '#8a3b2a'; ctx.beginPath(); ctx.moveTo(h.x + 25, h.y); ctx.lineTo(h.x + 50, h.y + 24); ctx.lineTo(h.x, h.y + 24); ctx.closePath(); ctx.fill(); ctx.fillStyle = '#5a3a22'; ctx.fillRect(h.x + 20, h.y + 34, 11, 16);
+}
 function drawVillager(v) { const sc = v.baby ? BABY_SCALE : 1, w = 16 * sc, h = 24 * sc; if (imgReady('villager')) { ctx.drawImage(images.villager, v.x, v.y, w, h); return; } ctx.fillStyle = '#f1c27d'; ctx.beginPath(); ctx.arc(v.x + w / 2, v.y + 5 * sc, 5 * sc, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#3b6fb0'; ctx.fillRect(v.x + 3 * sc, v.y + 10 * sc, 10 * sc, 14 * sc); }
 function drawWheat(c) { const img = variantImg('wheat', c.vseed); if (img) { ctx.drawImage(img, c.x - 12, c.y - 12, 24, 24); return; } ctx.strokeStyle = '#d8b13a'; ctx.lineWidth = 2; for (let i = -1; i <= 1; i++) { ctx.beginPath(); ctx.moveTo(c.x + i * 5, c.y + 8); ctx.lineTo(c.x + i * 5, c.y - 6); ctx.stroke(); } }
 function drawShrine(s) { const img = variantImg('shrine', s.vseed); if (img) ctx.drawImage(img, s.x - 6, s.y - 12, 44, 50); /* no yellow placeholder */ }
