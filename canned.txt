@@ -10,6 +10,8 @@ burn a villager
 burn a crop
 burn a goblin
 burn an ogre
+burn ogre
+burn orge
 
 [burn_many]
 burn goblins
@@ -17,12 +19,14 @@ burn some goblins
 burn the trees
 burn some huts
 burn the villagers
-burn everything
+burn orges
+burn ogres
 
 [attack]
 attack a goblin
 attack an ogre
 fight the ogre
+attack goblin
 
 [attack_many]
 attack goblins
@@ -52,6 +56,8 @@ stop running
 guard the village
 defend the village
 protect the town
+guard
+guard villagers
 
 [stop]
 stop
