@@ -4,222 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Egg V2</title>
-    <style>
-        :root {
-            --panel-bg: rgba(34, 34, 34, 0.94);
-            --panel-border: #555;
-            --accent: #0f0;
-        }
-        html, body {
-            margin: 0;
-            padding: 0;
-            height: 100%;
-            overflow: hidden;
-            font-family: monospace;
-            background: #111;
-            color: #fff;
-        }
-
-        /* The play area fills the whole screen behind everything. */
-        #gameCanvas {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 100vh;
-            display: block;
-            image-rendering: pixelated;
-        }
-
-        /* Top-left HUD: version, (hideable) controls hint, creature status. */
-        #hud {
-            position: fixed;
-            top: 12px;
-            left: 12px;
-            z-index: 50;
-            background: rgba(0, 0, 0, 0.55);
-            border: 1px solid var(--panel-border);
-            padding: 8px 12px;
-            font-size: 0.85em;
-            line-height: 1.6;
-            pointer-events: none;
-            max-width: 280px;
-        }
-        #hud b { color: var(--accent); font-size: 1.1em; }
-        #controls-hint { color: #aaa; }
-        #creature-status { color: var(--accent); font-weight: bold; }
-
-        /* --- Vitals (hearts + stamina) sit just above the Speak panel --- */
-        #vitals {
-            position: fixed;
-            right: 0;
-            bottom: 33vh;                 /* directly atop the Speak panel */
-            width: 340px;
-            box-sizing: border-box;
-            padding: 8px 14px 6px;
-            background: var(--panel-bg);
-            border-left: 3px solid var(--panel-border);
-            border-top: 3px solid var(--panel-border);
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-            z-index: 41;
-            pointer-events: none;
-        }
-        #hearts { display: flex; gap: 4px; }
-        #hearts svg { image-rendering: pixelated; display: block; }
-        #stamina { display: flex; gap: 6px; align-items: center; }
-        .stamina-dot {
-            width: 13px; height: 13px; border-radius: 50%;
-            border: 1px solid #6b6b2a;
-            background: #2c2c12;           /* empty */
-        }
-        .stamina-dot.full { background: #f4d000; }
-        .stamina-dot.half { background: linear-gradient(90deg, #f4d000 0 50%, #2c2c12 50% 100%); }
-
-        /* --- Speak to Creature panel: bottom-right, 1/3 height --- */
-        #right-panel {
-            position: fixed;
-            bottom: 0;
-            right: 0;
-            width: 340px;
-            height: 33vh;
-            box-sizing: border-box;
-            padding: 12px 14px;
-            background: var(--panel-bg);
-            border-top: 3px solid var(--panel-border);
-            border-left: 3px solid var(--panel-border);
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            z-index: 40;
-            backdrop-filter: blur(2px);
-        }
-
-        /* --- Pause panel: full-height on the left, hidden until ESC --- */
-        /* Ruler strip across the top, shown only while paused. */
-        #ruler {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 30px;
-            display: none;
-            z-index: 70;
-        }
-
-        #pause-panel {
-            position: fixed;
-            top: 30px;            /* sits just below the ruler */
-            left: 0;
-            bottom: 0;
-            width: 360px;
-            box-sizing: border-box;
-            padding: 18px 16px;
-            background: var(--panel-bg);
-            border-right: 3px solid var(--panel-border);
-            display: none;            /* hidden by default */
-            flex-direction: column;
-            gap: 12px;
-            z-index: 60;
-            backdrop-filter: blur(3px);
-        }
-        #pause-panel.open { display: flex; }
-        #pause-panel h2 { margin: 0; color: #fff; }
-        #pause-panel .resume-hint { color: #888; font-size: 0.8em; margin: 0; }
-        .settings-section {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid #444;
-        }
-        .settings-section label { color: #ccc; font-size: 0.9em; }
-
-        h3 { margin: 2px 0; font-size: 0.95em; color: #ccc; }
-
-        .log {
-            flex: 1 1 auto;
-            min-height: 0;
-            overflow-y: auto;
-            background: #1a1a1a;
-            padding: 8px;
-            border: 1px solid #444;
-            font-size: 0.85em;
-        }
-        .log p { margin: 0 0 4px 0; word-wrap: break-word; }
-
-        input[type="text"], input[type="password"] {
-            width: 100%;
-            padding: 9px;
-            box-sizing: border-box;
-            background: #000;
-            color: var(--accent);
-            border: 1px solid var(--panel-border);
-            flex: 0 0 auto;
-            font-family: monospace;
-        }
-
-        button {
-            background: #2e7d32;
-            color: white;
-            border: 1px solid #777;
-            padding: 9px;
-            cursor: pointer;
-            font-family: monospace;
-            flex: 0 0 auto;
-        }
-        button:hover { filter: brightness(1.15); }
-
-        /* Keys modal */
-        #keys-modal, #tree-modal, #villager-modal {
-            display: none;
-            position: fixed; inset: 0;
-            background: rgba(0, 0, 0, 0.7);
-            z-index: 100;
-            align-items: center; justify-content: center;
-        }
-        #keys-modal.open, #tree-modal.open, #villager-modal.open { display: flex; }
-        #keys-modal .modal-box, #tree-modal .modal-box, #villager-modal .modal-box {
-            background: #222; border: 3px solid var(--panel-border);
-            border-radius: 8px; padding: 18px; width: min(520px, 92vw);
-            max-height: 88vh; overflow-y: auto;
-            display: flex; flex-direction: column; gap: 10px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
-        }
-        #keys-modal h2, #tree-modal h2 { margin: 0; color: #fff; }
-        #keys-modal .modal-hint, #tree-modal .modal-hint { margin: 0; color: #999; font-size: 0.82em; }
-        #keys-modal .modal-row, #tree-modal .modal-row { display: flex; gap: 8px; }
-        #keys-modal .modal-row button, #tree-modal .modal-row button { flex: 1 1 auto; }
-        #tree-list { display: flex; flex-direction: column; gap: 7px; color: #ddd; }
-        #tree-list .cmd { color: #ffe08a; font-weight: bold; }
-        #tree-list .ex { color: #9fb6d8; font-size: 0.85em; }
-        #keys-list { display: flex; flex-direction: column; gap: 6px; }
-        .key-row { display: flex; gap: 6px; align-items: center; }
-        .key-row .key-input { flex: 1 1 auto; }
-        .key-remove { flex: 0 0 auto; background: #7a2e2e; padding: 6px 10px; }
-        .ghost-btn { background: #333; }
-
-        /* Spell bar */
-        #spell-bar {
-            position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
-            display: flex; gap: 6px; z-index: 42;
-        }
-        .spell-slot {
-            position: relative; width: 50px; height: 50px;
-            background: #000; border: 2px solid #fff; border-radius: 10px;
-            color: #fff; font-family: monospace;
-            display: flex; align-items: center; justify-content: center; font-size: 20px;
-        }
-        .spell-slot.selected { border-color: #2bff2b; box-shadow: 0 0 9px #2bff2b; }
-        .spell-slot .num { position: absolute; top: 2px; left: 5px; font-size: 11px; opacity: 0.75; }
-        .spell-slot .charge {
-            position: absolute; left: 3px; right: 3px; bottom: calc(100% + 4px); height: 7px;
-            background: #000; border: 1px solid #555; display: none;
-        }
-        .spell-slot .charge.active { display: block; }
-        .spell-slot .charge > i { display: block; height: 100%; width: 0%; background: orange; }
-    </style>
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
@@ -310,6 +95,16 @@
 
     <div id="spell-bar"></div>
 
-    <script src="game.js"></script>
+    <!-- Ordered: shared global scope; main.js (init) must be LAST. -->
+    <script src="config.js"></script>
+    <script src="engine.js"></script>
+    <script src="world.js"></script>
+    <script src="input.js"></script>
+    <script src="entities.js"></script>
+    <script src="actions.js"></script>
+    <script src="render.js"></script>
+    <script src="commands.js"></script>
+    <script src="ui.js"></script>
+    <script src="main.js"></script>
 </body>
 </html>
