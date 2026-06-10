@@ -11,7 +11,10 @@ burn a crop
 burn a goblin
 burn an ogre
 burn ogre
-burn orge
+burn hut
+burn goblin
+burn villager
+
 
 [burn_many]
 burn goblins
@@ -19,14 +22,15 @@ burn some goblins
 burn the trees
 burn some huts
 burn the villagers
-burn orges
+burn everything
 burn ogres
 
 [attack]
 attack a goblin
 attack an ogre
 fight the ogre
-attack goblin
+attack a villager
+attack a tree
 
 [attack_many]
 attack goblins
@@ -34,18 +38,42 @@ attack some goblins
 attack the goblins
 fight the ogres
 kill the goblins
+attack stuff
+kill
+kill stuff
+attack enemy
+attack
+attack ogres
+
+[explore]
+explore
+explore the map
+uncover the map
+scout
+look around
+go explore
+look
+
 
 [eat_crops]
 eat crops
 eat some wheat
 eat the crops
 graze
+eat something
+eat
+eat food
+eat some food
+eat some wheat
+snack
+get a snack
 
 [run]
 run
 hurry
 go faster
 sprint
+go
 
 [stop_running]
 slow down
@@ -57,6 +85,8 @@ guard the village
 defend the village
 protect the town
 guard
+guard village
+guard the villagers
 guard villagers
 
 [stop]
@@ -80,3 +110,4 @@ talk to me
 [idle]
 wait
 do nothing
+chill
