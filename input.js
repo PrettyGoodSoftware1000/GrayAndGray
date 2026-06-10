@@ -96,6 +96,7 @@ function handleControl(cmd) {
     const nm = cmd.match(/^\s*(?:your name is|you are called|name yourself|i name you|i'?ll call you)\s+(.+?)\s*[.!]?\s*$/i);
     if (nm) { creature.name = nm[1].trim().slice(0, 40); narratorSays('The creature is now called ' + creature.name + '.'); return true; }
     if (/\b(change|swap|new|switch)\s+(the\s+)?creature\b/i.test(cmd)) { changeCreature(); return true; }
+    if (/^\s*(explore|uncover (the )?map|reveal (the )?map|scout|explore the map)\s*[.!]?\s*$/i.test(cmd)) { startExplore(); maybeAlsoRun(); narratorSays('The creature sets out to explore.'); return true; }
     if (/\b(slow down|don'?t rush|stop running|ease up|take it easy|chill out|walk normally|quit running)\b/i.test(cmd)) { stopRunning(); narratorSays('The creature eases back to a walk.'); return true; }
     if (/^\s*(stop|cancel|halt|cease|enough|abort|never\s?mind|quit it|knock it off|stop it)\s*[.!]?\s*$/i.test(cmd)) { cancelAll(); narratorSays('The creature stops what it was doing.'); return true; }
     return false;
@@ -121,5 +122,5 @@ function updateStamina(dt) {
 function startRunning() { if (creature.stamina <= 0) { statusBox.innerText = 'Too tired to run.'; narratorSays('The creature is too winded to run.'); return; } creature.running = true; statusBox.innerText = 'Running!'; }
 function stopRunning() { creature.running = false; }
 function runMult() { return creature.running ? (RUN_SPEED_MPS / WANDER_SPEED_MPS) : 1; }   // wander 2 -> run 8
-function cancelAll() { creature.act = 'free'; creature.burnGoal = null; creature.burnCampaign = null; creature.attackCampaign = null; creature.eatCampaign = null; creature.guard = null; creature.resumeGuard = false; creature.running = false; creature.goto = null; statusBox.innerText = 'Exploring.'; }
+function cancelAll() { creature.act = 'free'; creature.burnGoal = null; creature.burnCampaign = null; creature.attackCampaign = null; creature.eatCampaign = null; creature.guard = null; creature.resumeGuard = false; creature.running = false; creature.goto = null; creature.exploreTarget = null; statusBox.innerText = 'Exploring.'; }
 

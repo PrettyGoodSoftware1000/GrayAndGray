@@ -13,13 +13,39 @@ function regenerateMap(opts) {
     saveGame(); updateLog("Map regenerated — a fresh world.");
     renderScene(); if (isPaused) drawRuler();
 }
+function formatBehaviorsSection() {
+    const out = ['[Behaviors]'];
+    for (const sec of ['Aggressive', 'Helpful', 'Neutral']) {
+        const b = behaviors[sec.toLowerCase()] || { multiplier: 1.0, entries: {} };
+        out.push('[' + sec + '] multiplier=' + (b.multiplier != null ? b.multiplier : 1.0));
+        for (const name in (b.entries || {})) { const e = b.entries[name]; out.push('  ' + (e.timer || '0:00') + ' ' + name + ' = ' + e.value); }
+    }
+    return out.join('\n');
+}
+function parseBehaviorsSection(text) {
+    const lines = text.split(/\r?\n/);
+    let i = lines.findIndex(l => l.trim() === '[Behaviors]');
+    if (i < 0) return null;
+    normalizeBehaviors(); let sec = null;
+    for (i = i + 1; i < lines.length; i++) {
+        const l = lines[i].trim(); if (!l) continue;
+        const head = l.match(/^\[(Aggressive|Helpful|Neutral)\]\s*(?:multiplier\s*=\s*([-\d.]+))?/i);
+        if (head) { sec = head[1].toLowerCase(); if (head[2] != null) behaviors[sec].multiplier = parseFloat(head[2]); continue; }
+        if (l.startsWith('[')) break;                                   // next top-level section ends [Behaviors]
+        const m = l.match(/^(\S+)\s+([a-z_]+)\s*=\s*([-\d.]+)/i);       // "<timer> <name> = <value>"
+        if (m && sec) behaviors[sec].entries[m[2].toLowerCase()] = { timer: m[1], value: parseFloat(m[3]) };
+    }
+    return behaviors;
+}
 function downloadSave() {
-    const state = { version: VERSION, savedAt: new Date().toISOString(), world, creature, camera, zoom, rerunCommands: rerunMemory };
+    const state = { version: VERSION, savedAt: new Date().toISOString(), world, creature, camera, zoom, rerunCommands: rerunMemory, behaviors };
     const lines = [];
     lines.push("=== EGG V2 SAVE ===");
     lines.push("Build: v" + GAME_VERSION);
     lines.push("Saved: " + state.savedAt);
     lines.push("Active voice: " + activeVoice);
+    lines.push("");
+    lines.push(formatBehaviorsSection());                              // editable [Behaviors] section
     lines.push("");
     lines.push("--- Rerun commands (command -> creature's response) ---");
     const keys = Object.keys(rerunMemory);
@@ -87,14 +113,17 @@ function importSave(file) {
             if (data.creature) creature = data.creature;
             if (data.camera) camera = data.camera;
             if (typeof data.zoom === 'number') zoom = data.zoom;
-            if (typeof data.burn_a_villager === 'number') burnAVillager = data.burn_a_villager;
+            if (data.behaviors) behaviors = data.behaviors;
+            if (typeof data.burn_a_villager === 'number') { normalizeBehaviors(); behaviors.aggressive.entries.burn_a_villager.value = data.burn_a_villager; }
+            normalizeBehaviors();
+            parseBehaviorsSection(text);                                  // editable [Behaviors] section overrides
             if (data.rerunCommands && typeof data.rerunCommands === 'object') { rerunMemory = data.rerunCommands; saveRerunMemory(); }
             normalizeWorld();
             resetCreatureRuntime();
             buildWaterLayer();
             renderHearts(creature.hearts); renderStamina(creature.stamina); lastStamina = creature.stamina;
             clampCamera();
-            localStorage.setItem('creatureGameState', JSON.stringify({ version: VERSION, world, creature, camera, zoom, burn_a_villager: burnAVillager }));
+            localStorage.setItem('creatureGameState', JSON.stringify({ version: VERSION, world, creature, camera, zoom, behaviors }));
             updateLog("Save imported" + (data.savedAt ? " (from " + data.savedAt + ")" : "") + ".");
             narratorSays("A saved world settles into place.");
             renderScene(); if (isPaused) drawRuler();
@@ -134,8 +163,8 @@ function onCreatureBurnedVillager() {
 }
 function closeVillagerDialog() { villagerModal.classList.remove('open'); dialogPaused = false; }
 vilIgnoreBtn.addEventListener('click', () => { narratorSays("You've ignored the creature for now."); closeVillagerDialog(); });
-vilPraiseBtn.addEventListener('click', () => { narratorSays("Who's a good boy? You are."); burnAVillager += 10; saveGame(); closeVillagerDialog(); });
-vilScoldBtn.addEventListener('click', () => { narratorSays("Stop that! No! Bad Creature! Bad"); burnAVillager -= 10; saveGame(); closeVillagerDialog(); });
+vilPraiseBtn.addEventListener('click', () => { narratorSays("Who's a good boy? You are."); behaviors.aggressive.entries.burn_a_villager.value += 10; saveGame(); closeVillagerDialog(); });
+vilScoldBtn.addEventListener('click', () => { narratorSays("Stop that! No! Bad Creature! Bad"); behaviors.aggressive.entries.burn_a_villager.value -= 10; saveGame(); closeVillagerDialog(); });
 
 // ===========================================================
 //  API KEYS

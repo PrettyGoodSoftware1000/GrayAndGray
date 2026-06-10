@@ -75,9 +75,6 @@ function updateHutGrowth(dt) {
 // ---- Not Commanded State: the creature's default idle behavior ----
 function pickNotCommanded(now) {
     const r = Math.random();
-    if (world.villagers.length && now - (creature.lastVillagerBurn || 0) > 60000 && r < 0.2) {   // burn a villager, <=1/min
-        creature.lastVillagerBurn = now; creature.ncUntil = now + 8000; performBurn('villager'); return;
-    }
     if (r < 0.8) {                                                                                 // explore for 10-40 s
         creature.ncUntil = now + (10 + Math.random() * 30) * 1000;
         creature.moveState = 'walking'; creature.stateUntil = now + (3000 + Math.random() * 9000); statusBox.innerText = pickWalkStatus();
@@ -86,9 +83,51 @@ function pickNotCommanded(now) {
         creature.moveState = 'stopped'; creature.stateUntil = creature.ncUntil; statusBox.innerText = 'Resting.';
     }
 }
+// --- Behavior system helpers ---
+function parseTimerRange(t) {
+    const toSec = (str) => { const m = String(str).split(':'); return (parseInt(m[0], 10) || 0) * 60 + (parseInt(m[1], 10) || 0); };
+    const parts = String(t || '0:00').split('-');
+    const min = toSec(parts[0]); const max = parts[1] ? toSec(parts[1]) : min;
+    return { min, max: Math.max(min, max) };
+}
+function behaviorChance(section, name) { const b = behaviors[section]; if (!b || !b.entries[name]) return 0; return (b.entries[name].value || 0) * (b.multiplier || 1); }
+function maybeAlsoRun() { if (Math.random() * 100 < behaviorChance('neutral', 'go_run')) startRunning(); }   // run in addition to a commanded action
+function bumpGoRun() { const e = behaviors.neutral && behaviors.neutral.entries.go_run; if (e) e.value = Math.min(100, (e.value || 0) + 10); }
+function updateBehaviors(now) {
+    if (creature.dead || creature.act !== 'free') return;     // autonomous behaviors only when NOT commanded
+    const e = behaviors.aggressive && behaviors.aggressive.entries.burn_a_villager;
+    if (!e) return;
+    const reroll = () => { const r = parseTimerRange(e.timer); behaviorTimers.burn_a_villager = now + (r.min + Math.random() * (r.max - r.min)) * 1000; };
+    if (!behaviorTimers.burn_a_villager) { reroll(); return; }
+    if (now >= behaviorTimers.burn_a_villager) {
+        reroll();                                              // timer restarts whether or not it burns
+        const v = nearestIn(world.villagers, creature.x + 30, creature.y + 33, m2px(25));   // villager within 25 m?
+        if (v && Math.random() * 100 < behaviorChance('aggressive', 'burn_a_villager')) performBurn('villager');
+    }
+}
+// --- Explore command: head toward the nearest unexplored (black) area ---
+function findNearestFog() {
+    if (!fogCtx) return null;
+    let data; try { data = fogCtx.getImageData(0, 0, fogCanvas.width, fogCanvas.height).data; } catch (e) { return null; }
+    const fw = fogCanvas.width, fh = fogCanvas.height, cfx = (creature.x + 30) / FOG_SCALE, cfy = (creature.y + 33) / FOG_SCALE;
+    let best = null, bd = Infinity, step = 3;
+    for (let y = 0; y < fh; y += step) for (let x = 0; x < fw; x += step) {
+        if (data[(y * fw + x) * 4 + 3] > 10) { const dx = x - cfx, dy = y - cfy, d = dx * dx + dy * dy; if (d < bd) { bd = d; best = { x: x * FOG_SCALE, y: y * FOG_SCALE }; } }
+    }
+    return best;
+}
+function startExplore() { creature.exploreTarget = null; creature.act = 'exploring'; statusBox.innerText = 'Exploring the unknown...'; }
+function updateExplore(dt) {
+    if (!creature.exploreTarget) { const t = findNearestFog(); if (!t) { narratorSays('The map is fully explored.'); creature.act = 'free'; creature.ncUntil = 0; return; } creature.exploreTarget = t; }
+    const t = creature.exploreTarget, d = Math.hypot(t.x - (creature.x + 30), t.y - (creature.y + 33));
+    if (d < VISION_PX * 0.6) { creature.exploreTarget = null; return; }                  // close enough -> it's uncovered; retarget
+    stepCreatureToward(t.x, t.y, WANDER_SPEED_MPS * PIXELS_PER_METER * dt * runMult());
+    statusBox.innerText = 'Exploring the unknown...';
+}
 function updateCreature(dt, now) {
     if (creature.dead) return;
     creatureAutoAttack(now);                                            // attacking ALWAYS takes precedence
+    updateBehaviors(now);                                               // autonomous behaviors (only act when free)
     if (creature.act === 'busy') return;
     if (creature.act === 'seeking') { seekStep(dt); return; }
     if (creature.act === 'burning') { updateBurnCampaign(dt, now); return; }
@@ -96,6 +135,7 @@ function updateCreature(dt, now) {
     if (creature.act === 'eating') { updateEatCampaign(dt, now); return; }
     if (creature.act === 'guarding') { updateGuard(dt, now); return; }
     if (creature.act === 'goto') { updateGoto(dt); return; }
+    if (creature.act === 'exploring') { updateExplore(dt); return; }
     // --- Not Commanded State (default) ---
     if (!creature.ncUntil || now >= creature.ncUntil) { pickNotCommanded(now); return; }
     if (now > creature.interactCooldown) { const v = nearestIn(world.villagers, creature.x + 30, creature.y + 33, INTERACT_RANGE_PX); if (v) { startVillagerInteraction(v.obj, now); return; } }

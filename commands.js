@@ -20,13 +20,14 @@ You are a fire-throwing tiger. Choose ONE action:
 - "attack": walk up to the nearest enemy and melee it. Set "target": "goblin","ogre","any". Maps: "attack a goblin","fight the ogre","kill that goblin".
 - "attack_many": go melee a bunch of enemies one after another. Set "target". Maps: "attack some goblins","attack the goblins","fight the ogres","kill the goblins".
 - "eat_crops": graze nearby wheat to heal (1 heart each). Maps: "eat crops","eat some wheat","graze","go eat".
+- "explore": wander toward unexplored (black) parts of the map to uncover them. Maps: "explore","explore the map","uncover the map","scout".
 - "stop": cancel whatever the creature is doing. Maps: "stop","cancel","halt","that's enough","nevermind".
 - "grow": grow more nature.   - "spread_huts": add a hut.   - "speak": only talk.   - "idle": do nothing.
 
 Your "speech" MUST be in your established voice/personality.
 
 Respond ONLY with raw JSON (no fences):
-{"action":"burn|burn_many|attack|attack_many|eat_crops|run|stop_running|guard|stop|grow|spread_huts|speak|idle","target":"tree|villager|hut|crop|goblin|ogre|any|null","speech":"in-character line","shortStatusText":"1-6 words"}`;
+{"action":"burn|burn_many|attack|attack_many|eat_crops|explore|run|stop_running|guard|stop|grow|spread_huts|speak|idle","target":"tree|villager|hut|crop|goblin|ogre|any|null","speech":"in-character line","shortStatusText":"1-6 words"}`;
     try {
         const d = JSON.parse(await callGemini(taskPrompt));
         refineAction(d, userMessage);                    // make "burn/attack some X" deterministic
@@ -54,6 +55,7 @@ function executeAction(action, target) {
         case "burn_goblins": startBurnCampaign('goblin', Date.now(), false); break;  // legacy alias
         case "attack": case "attack_many": startAttackCampaign(target || 'any', Date.now()); break;
         case "eat_crops": case "eat": startEatCampaign(Date.now()); break;
+        case "explore": startExplore(); break;
         case "run": startRunning(); break;
         case "stop_running": stopRunning(); break;
         case "guard": startGuard(Date.now()); break;
@@ -61,6 +63,8 @@ function executeAction(action, target) {
         case "grow": castGrow(); break;
         case "spread_huts": castSpreadHuts(); break;
     }
+    if (action === 'run') bumpGoRun();                                                    // +10% go_run propensity
+    else if (['burn', 'burn_many', 'attack', 'attack_many', 'eat_crops', 'guard', 'explore'].includes(action)) maybeAlsoRun();   // may also run
 }
 
 // ---- Rerun command memory (durable: localStorage) ----

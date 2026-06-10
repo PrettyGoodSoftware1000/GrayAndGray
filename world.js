@@ -150,10 +150,10 @@ saveSettingsBtn.addEventListener('click', resumeGame);
 // ===========================================================
 //  STORAGE
 // ===========================================================
-function saveGame() { if (isPaused) return; localStorage.setItem('creatureGameState', JSON.stringify({ version: VERSION, world, creature, camera, zoom, burn_a_villager: burnAVillager })); }
+function saveGame() { if (isPaused) return; localStorage.setItem('creatureGameState', JSON.stringify({ version: VERSION, world, creature, camera, zoom, behaviors })); }
 function loadGame() {
     const saved = localStorage.getItem('creatureGameState'); let ok = false;
-    if (saved) { try { const data = JSON.parse(saved); if (data.version === VERSION && data.world && data.world.rivers) { world = data.world; creature = data.creature; if (data.camera) camera = data.camera; if (data.zoom) zoom = data.zoom; if (typeof data.burn_a_villager === 'number') burnAVillager = data.burn_a_villager; normalizeWorld(); updateLog("World state loaded."); ok = true; } } catch (e) { console.warn("Bad save, regenerating.", e); } }
+    if (saved) { try { const data = JSON.parse(saved); if (data.version === VERSION && data.world && data.world.rivers) { world = data.world; creature = data.creature; if (data.camera) camera = data.camera; if (data.zoom) zoom = data.zoom; if (data.behaviors) behaviors = data.behaviors; if (typeof data.burn_a_villager === 'number') { normalizeBehaviors(); behaviors.aggressive.entries.burn_a_villager.value = data.burn_a_villager; } normalizeBehaviors(); normalizeWorld(); updateLog("World state loaded."); ok = true; } } catch (e) { console.warn("Bad save, regenerating.", e); } }
     if (!ok) { generateWorld(); placeCreatureInVillage(); }
     resetCreatureRuntime();
 }
@@ -174,3 +174,15 @@ function resetCreatureRuntime() {
     creature.ncUntil = 0; creature.lastVillagerBurn = 0;
 }
 
+
+// Ensure the behaviors object always has the expected shape (covers old/edited saves)
+function normalizeBehaviors() {
+    if (!behaviors || typeof behaviors !== 'object') behaviors = {};
+    const def = { aggressive: { burn_a_villager: { timer: '3:00-4:00', value: 50 } }, helpful: {}, neutral: { go_run: { timer: '0:00', value: 10 } } };
+    for (const sec of ['aggressive', 'helpful', 'neutral']) {
+        if (!behaviors[sec] || typeof behaviors[sec] !== 'object') behaviors[sec] = {};
+        if (typeof behaviors[sec].multiplier !== 'number') behaviors[sec].multiplier = 1.0;
+        if (!behaviors[sec].entries || typeof behaviors[sec].entries !== 'object') behaviors[sec].entries = {};
+        for (const name in def[sec]) if (!behaviors[sec].entries[name]) behaviors[sec].entries[name] = Object.assign({}, def[sec][name]);
+    }
+}
