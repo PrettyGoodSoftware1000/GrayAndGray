@@ -226,18 +226,20 @@ function creatureAutoAttack(now) {
 }
 
 // ---- Attack command (melee version of burn) ----
+function attackablePool(type) { return ({ goblin: world.goblins, ogre: world.ogres, villager: world.villagers, tree: world.trees, hut: world.huts, crop: world.crops })[type] || null; }
 function nearestEnemyOfType(type, x, y, maxPx) {
     let best = null, bd = maxPx;
     const scan = (arr) => { for (const o of arr) { const d = Math.hypot(o.x - x, o.y - y); if (d < bd) { bd = d; best = { obj: o, arr, dist: d }; } } };
-    if (type === 'goblin') scan(world.goblins);
-    else if (type === 'ogre') scan(world.ogres);
-    else { scan(world.goblins); scan(world.ogres); }
+    const pool = attackablePool(type);
+    if (pool) scan(pool);
+    else { scan(world.goblins); scan(world.ogres); }       // no/unknown target -> ENEMIES ONLY (goblins + ogres)
     return best;
 }
 function startAttackCampaign(type, now) {
-    type = (type === 'ogre' || type === 'ogres') ? 'ogre' : (type === 'goblin' || type === 'goblins') ? 'goblin' : 'any';
+    type = normalizeTarget(type);                          // map plurals/synonyms (goblins->goblin, etc.)
+    if (!attackablePool(type)) type = 'any';               // anything not directly attackable -> enemies only
     const first = nearestEnemyOfType(type, creature.x + 30, creature.y + 33, Infinity);
-    if (!first) { statusBox.innerText = 'No enemies to attack.'; creature.act = 'free'; return; }
+    if (!first) { statusBox.innerText = (type === 'any' ? 'No enemies to attack.' : 'Nothing to attack.'); creature.act = 'free'; return; }
     creature.attackCampaign = { type, cur: null, arr: null, lastPos: null, nextHit: 0 };
     creature.act = 'attacking'; statusBox.innerText = 'On the warpath...';
 }
@@ -253,7 +255,7 @@ function updateAttackCampaign(dt, now) {
     }
     const o = camp.cur, d = Math.hypot(o.x - (creature.x + 30), o.y - (creature.y + 33));
     if (d > ATTACK_RANGE_PX) { stepCreatureToward(o.x, o.y, SEEK_SPEED_MPS * PIXELS_PER_METER * dt * runMult()); statusBox.innerText = 'Charging an enemy...'; }
-    else if (now >= camp.nextHit) { statusBox.innerText = 'Attacking!'; narrateAttack(camp.arr, now); const dead = damageEntity(o, camp.arr, CREATURE_ATTACK_DMG); if (dead) { camp.lastPos = { x: o.x, y: o.y }; camp.cur = null; camp.arr = null; } camp.nextHit = now + CREATURE_ATTACK_MS; }
+    else if (now >= camp.nextHit) { statusBox.innerText = 'Attacking!'; narrateAttack(camp.arr, now); const wasVillager = (camp.arr === world.villagers); const dead = damageEntity(o, camp.arr, CREATURE_ATTACK_DMG); if (dead) { camp.lastPos = { x: o.x, y: o.y }; camp.cur = null; camp.arr = null; if (wasVillager) onCreatureBurnedVillager(); } camp.nextHit = now + CREATURE_ATTACK_MS; }
 }
 
 // ---- Eat crops: walk to a crop (within 5 m), eat it (heal 1 heart), wait 3 s, repeat ----

@@ -100,11 +100,14 @@ function applyBurnIntent(d, text) {
 function attackIntent(text) {
     const t = (text || '').toLowerCase();
     if (!/\b(attack|fight|kill|smash|maul|claw|bash|slay|beat up|punch)\b/.test(t)) return null;
-    const many = /\b(some|several|a few|a bunch of|bunch|all|every|lots of|many|the\s+\w+s\b|goblins|ogres)\b/.test(t);
-    let type = null;
+    const many = /\b(some|several|a few|a bunch of|bunch|all|every|lots of|many|the\s+\w+s\b|goblins|ogres|villagers|trees|huts|crops)\b/.test(t);
+    let type = null;                                       // null target -> 'any' -> ENEMIES ONLY (goblins + ogres)
     if (/\bogres?\b/.test(t)) type = 'ogre';
     else if (/\bgoblins?\b/.test(t)) type = 'goblin';
-    else if (/\bogres?\b/.test(t)) type = 'ogre';
+    else if (/\bvillagers?\b/.test(t)) type = 'villager';
+    else if (/\btrees?\b/.test(t)) type = 'tree';
+    else if (/\bhuts?\b/.test(t)) type = 'hut';
+    else if (/\bcrops?\b/.test(t)) type = 'crop';
     return { many, type };
 }
 function applyAttackIntent(d, text) { const ai = attackIntent(text); if (!ai) return false; d.action = ai.many ? 'attack_many' : 'attack'; d.target = ai.type || 'any'; return true; }
